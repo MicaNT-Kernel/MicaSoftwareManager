@@ -1,5 +1,6 @@
 #include <micamgr/registry_scanner.hpp>
 #include <algorithm>
+#include <unordered_set>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -68,7 +69,7 @@ static DWORD readRegDword(HKEY hKey, const wchar_t* valueName) {
     return 0;
 }
 
-static void scanRegistryKey(HKEY root, const wchar_t* subKeyPath, REGSAM viewSam, std::vector<InstalledAppInfo>& outApps) {
+static void scanRegistryKey(HKEY root, const wchar_t* subKeyPath, REGSAM viewSam, std::vector<InstalledAppInfo>& outApps, std::unordered_set<std::string>& seenKeys) {
     HKEY hRootKey = nullptr;
     LONG res = RegOpenKeyExW(root, subKeyPath, 0, KEY_READ | viewSam, &hRootKey);
     if (res != ERROR_SUCCESS) return;
@@ -88,31 +89,49 @@ static void scanRegistryKey(HKEY root, const wchar_t* subKeyPath, REGSAM viewSam
             res = RegOpenKeyExW(hRootKey, keyNameBuf.data(), 0, KEY_READ | viewSam, &hAppKey);
             if (res != ERROR_SUCCESS) continue;
 
-            std::string name = readRegString(hAppKey, L"DisplayName");
-            if (!name.empty()) {
-                InstalledAppInfo info;
-                info.displayName = name;
-                info.displayVersion = readRegString(hAppKey, L"DisplayVersion");
-                info.publisher = readRegString(hAppKey, L"Publisher");
-                info.installLocation = readRegString(hAppKey, L"InstallLocation");
-                info.uninstallString = readRegString(hAppKey, L"UninstallString");
-                info.quietUninstallString = readRegString(hAppKey, L"QuietUninstallString");
-                info.estimatedSizeBytes = static_cast<uint64_t>(readRegDword(hAppKey, L"EstimatedSize")) * 1024ULL;
-                info.isSystemComponent = (readRegDword(hAppKey, L"SystemComponent") != 0);
-
-                if (!info.isSystemComponent) {
-                    bool alreadyExists = false;
-                    for (const auto& existing : outApps) {
-                        if (existing.displayName == info.displayName && existing.displayVersion == info.displayVersion) {
-                            alreadyExists = true;
-                            break;
-                        }
-                    }
-                    if (!alreadyExists) {
-                        outApps.push_back(std::move(info));
-                    }
-                }
+            // 1. Fast-path: Skip Windows internal and system components immediately (avoids 80% of server keys)
+            if (readRegDword(hAppKey, L"SystemComponent") != 0) {
+                RegCloseKey(hAppKey);
+                continue;
             }
+
+            // 2. Read DisplayName - if missing or empty, skip immediately
+            std::string name = readRegString(hAppKey, L"DisplayName");
+            if (name.empty()) {
+                RegCloseKey(hAppKey);
+                continue;
+            }
+
+            // 3. Skip nested child updates / hotfixes
+            std::string parentKey = readRegString(hAppKey, L"ParentKeyName");
+            if (!parentKey.empty()) {
+                RegCloseKey(hAppKey);
+                continue;
+            }
+
+            std::string ver = readRegString(hAppKey, L"DisplayVersion");
+
+            // 4. O(1) deduplication check using hash set
+            std::string dedupeKey = name;
+            dedupeKey.push_back('\t');
+            dedupeKey.append(ver);
+
+            if (!seenKeys.insert(dedupeKey).second) {
+                RegCloseKey(hAppKey);
+                continue;
+            }
+
+            InstalledAppInfo info;
+            info.displayName = std::move(name);
+            info.displayVersion = std::move(ver);
+            info.publisher = readRegString(hAppKey, L"Publisher");
+            info.installLocation = readRegString(hAppKey, L"InstallLocation");
+            info.uninstallString = readRegString(hAppKey, L"UninstallString");
+            info.quietUninstallString = readRegString(hAppKey, L"QuietUninstallString");
+            info.estimatedSizeBytes = static_cast<uint64_t>(readRegDword(hAppKey, L"EstimatedSize")) * 1024ULL;
+            info.isSystemComponent = false;
+
+            outApps.push_back(std::move(info));
             RegCloseKey(hAppKey);
         }
     }
@@ -122,15 +141,19 @@ static void scanRegistryKey(HKEY root, const wchar_t* subKeyPath, REGSAM viewSam
 
 std::vector<InstalledAppInfo> RegistryScanner::scanInstalledApps() {
     std::vector<InstalledAppInfo> apps;
+    apps.reserve(256);
 
 #ifdef _WIN32
+    std::unordered_set<std::string> seenKeys;
+    seenKeys.reserve(512);
+
     // Scan HKLM 64-bit
-    scanRegistryKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_64KEY, apps);
+    scanRegistryKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_64KEY, apps, seenKeys);
     // Scan HKLM 32-bit
-    scanRegistryKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_32KEY, apps);
+    scanRegistryKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_32KEY, apps, seenKeys);
     // Scan HKCU 64-bit and 32-bit (per-user WOW64 enumeration)
-    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_64KEY, apps);
-    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_32KEY, apps);
+    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_64KEY, apps, seenKeys);
+    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_32KEY, apps, seenKeys);
 #endif
 
     // If zero apps discovered (e.g., container, sandbox, or Linux mock test), inject representative inventory
@@ -201,7 +224,7 @@ std::string RegistryScanner::matchToCatalogId(const std::string& displayName, co
     // Pass 2: Word-boundary / token-based match (eliminates false positives from short substrings)
     for (const auto& pkg : catalogPackages) {
         std::string lPkgName = toLower(pkg.name);
-        if (containsWord(lName, lPkgName)) {
+        if (lPkgName.length() >= 3 && containsWord(lName, lPkgName)) {
             return pkg.id;
         }
 

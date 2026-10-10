@@ -31,16 +31,20 @@ class SoftwareManagerUI {
 public:
     SoftwareManagerUI();
 
-    void setActiveTab(ManagerTab tab) noexcept { activeTab_ = tab; }
+    void setActiveTab(ManagerTab tab) noexcept;
     [[nodiscard]] ManagerTab activeTab() const noexcept { return activeTab_; }
 
     void setSearchQuery(std::string_view query);
     [[nodiscard]] const std::string& searchQuery() const noexcept { return searchQuery_; }
 
-    void setCategory(PackageCategory cat) noexcept { activeCategory_ = cat; }
+    void setCategory(PackageCategory cat) noexcept;
     [[nodiscard]] PackageCategory activeCategory() const noexcept { return activeCategory_; }
 
-    void refresh();
+    /// Re-evaluates filtered packages from cached catalog without rescanning registry (instantaneous).
+    void updateFilteredPackages();
+
+    /// Refreshes catalog view. If forceScan is true, triggers a full system inventory re-scan.
+    void refresh(bool forceScan = false);
 
     /// Layout calculation for given window width & height.
     void updateLayout(int width, int height);

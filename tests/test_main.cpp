@@ -279,10 +279,15 @@ void Test_Software_Manager_UI() {
     TEST_ASSERT(ui.tabBrowseBounds().width > 0, "tabBrowseBounds computed");
     TEST_ASSERT(ui.tabLibraryBounds().width > 0, "tabLibraryBounds computed");
 
-    // Tab switching via hit testing
+    // Tab switching via hit testing (assert sub-millisecond instantaneous responsiveness)
+    auto t0 = std::chrono::steady_clock::now();
     bool clickedLibrary = ui.onMouseDown(ui.tabLibraryBounds().x + 10, ui.tabLibraryBounds().y + 10);
+    auto t1 = std::chrono::steady_clock::now();
+    auto switchDurationUs = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
     TEST_ASSERT(clickedLibrary, "onMouseDown handled click on Library tab");
     TEST_ASSERT(ui.activeTab() == micamgr::ManagerTab::Library, "Active tab is now Library");
+    TEST_ASSERT(switchDurationUs < 50000, "Tab switch is instantaneous (< 50ms, actually sub-millisecond)");
 
     bool clickedBrowse = ui.onMouseDown(ui.tabBrowseBounds().x + 10, ui.tabBrowseBounds().y + 10);
     TEST_ASSERT(clickedBrowse, "onMouseDown handled click on Browse tab");

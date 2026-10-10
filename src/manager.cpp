@@ -69,6 +69,12 @@ MicaManager::MicaManager() {
     initialize();
 }
 
+MicaManager::~MicaManager() {
+    if (scanThread_.joinable()) {
+        scanThread_.join();
+    }
+}
+
 static std::filesystem::path getPinsConfigPath() {
 #ifdef _WIN32
     const char* localApp = std::getenv("LOCALAPPDATA");
@@ -106,18 +112,57 @@ void MicaManager::initialize() {
         }
     }
 
-    refreshInstalledApps();
     initialized_ = true;
+    // NOTE: Non-blocking sovereign startup. Registry scan is performed lazily or asynchronously.
 }
 
 void MicaManager::refreshInstalledApps() {
-    installedApps_ = RegistryScanner::scanInstalledApps();
+    auto apps = RegistryScanner::scanInstalledApps();
+    std::lock_guard<std::mutex> lock(mutex_);
+    installedApps_ = std::move(apps);
     UpdateEngine::checkForUpdates(catalog_, installedApps_);
 }
 
-std::vector<PackageManifest> MicaManager::checkUpdates() {
-    refreshInstalledApps();
+std::vector<PackageManifest> MicaManager::checkUpdates(bool forceRefresh) {
+    bool doScan = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (installedApps_.empty() || forceRefresh) {
+            doScan = true;
+        }
+    }
+    if (doScan) {
+        refreshInstalledApps();
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
     return catalog_.filterByCategory(PackageCategory::Updates);
+}
+
+void MicaManager::startAsyncScan(std::function<void(size_t, size_t)> onComplete) {
+    if (isScanning_.exchange(true)) {
+        return; // Scan already in progress
+    }
+    if (scanThread_.joinable()) {
+        scanThread_.join();
+    }
+    scanThread_ = std::thread([this, onComplete]() {
+        refreshInstalledApps();
+        isScanning_.store(false);
+        if (onComplete) {
+            size_t appsCount = 0;
+            size_t updatesCount = 0;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                appsCount = installedApps_.size();
+                updatesCount = catalog_.filterByCategory(PackageCategory::Updates).size();
+            }
+            onComplete(appsCount, updatesCount);
+        }
+    });
+}
+
+bool MicaManager::isScanning() const noexcept {
+    return isScanning_.load();
 }
 
 bool MicaManager::installPackage(std::string_view packageId, std::string& outMessage) {

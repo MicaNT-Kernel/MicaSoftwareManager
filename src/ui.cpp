@@ -13,18 +13,31 @@
 namespace micamgr {
 
 SoftwareManagerUI::SoftwareManagerUI() {
-    refresh();
+    updateFilteredPackages();
+    updateLayout(winWidth_, winHeight_);
+}
+
+void SoftwareManagerUI::setActiveTab(ManagerTab tab) noexcept {
+    activeTab_ = tab;
+    updateFilteredPackages();
+    updateLayout(winWidth_, winHeight_);
+}
+
+void SoftwareManagerUI::setCategory(PackageCategory cat) noexcept {
+    activeCategory_ = cat;
+    updateFilteredPackages();
     updateLayout(winWidth_, winHeight_);
 }
 
 void SoftwareManagerUI::setSearchQuery(std::string_view query) {
     searchQuery_ = query;
-    refresh();
+    updateFilteredPackages();
+    updateLayout(winWidth_, winHeight_);
 }
 
-void SoftwareManagerUI::refresh() {
+void SoftwareManagerUI::updateFilteredPackages() {
     auto& mgr = MicaManager::instance();
-    pendingUpdates_ = mgr.checkUpdates();
+    pendingUpdates_ = mgr.catalog().filterByCategory(PackageCategory::Updates);
 
     if (activeTab_ == ManagerTab::Browse) {
         if (!searchQuery_.empty()) {
@@ -34,9 +47,25 @@ void SoftwareManagerUI::refresh() {
         }
     } else if (activeTab_ == ManagerTab::Library) {
         filteredPackages_ = pendingUpdates_;
+        if (filteredPackages_.empty()) {
+            for (const auto& p : mgr.catalog().allPackages()) {
+                if (p.state == InstallState::Installed) {
+                    filteredPackages_.push_back(p);
+                }
+            }
+        }
     } else {
         filteredPackages_.clear();
     }
+}
+
+void SoftwareManagerUI::refresh(bool forceScan) {
+    auto& mgr = MicaManager::instance();
+    if (forceScan) {
+        mgr.refreshInstalledApps();
+    }
+    updateFilteredPackages();
+    updateLayout(winWidth_, winHeight_);
 }
 
 void SoftwareManagerUI::updateLayout(int width, int height) {
@@ -74,22 +103,18 @@ void SoftwareManagerUI::setInspectFilePath(const std::filesystem::path& path) {
 bool SoftwareManagerUI::onMouseDown(int x, int y) {
     if (tabBrowseBounds_.contains(x, y)) {
         setActiveTab(ManagerTab::Browse);
-        refresh();
         return true;
     }
     if (tabLibraryBounds_.contains(x, y)) {
         setActiveTab(ManagerTab::Library);
-        refresh();
         return true;
     }
     if (tabSideloadBounds_.contains(x, y)) {
         setActiveTab(ManagerTab::Sideload);
-        refresh();
         return true;
     }
     if (tabSettingsBounds_.contains(x, y)) {
         setActiveTab(ManagerTab::Settings);
-        refresh();
         return true;
     }
 
@@ -97,7 +122,8 @@ bool SoftwareManagerUI::onMouseDown(int x, int y) {
         statusMessage_ = "Updating all pending packages...";
         auto reports = MicaManager::instance().upgradeAll();
         statusMessage_ = "Updated " + std::to_string(reports.size()) + " packages.";
-        refresh();
+        updateFilteredPackages();
+        updateLayout(winWidth_, winHeight_);
         return true;
     }
 
@@ -106,7 +132,8 @@ bool SoftwareManagerUI::onMouseDown(int x, int y) {
             std::string log;
             MicaManager::instance().installPackage(pkgId, log);
             statusMessage_ = "Installed " + pkgId;
-            refresh();
+            updateFilteredPackages();
+            updateLayout(winWidth_, winHeight_);
             return true;
         }
     }
@@ -120,9 +147,50 @@ void SoftwareManagerUI::onSearchInput(std::string_view text) {
 
 #ifdef _WIN32
 static SoftwareManagerUI* g_ui = nullptr;
+static HFONT g_titleFont = nullptr;
+static HFONT g_subFont = nullptr;
+static HFONT g_cardTitleFont = nullptr;
+static HPEN g_linePen = nullptr;
+
+static void initGdiResources() {
+    if (!g_titleFont) {
+        g_titleFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+    if (!g_subFont) {
+        g_subFont = CreateFontW(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+    if (!g_cardTitleFont) {
+        g_cardTitleFont = CreateFontW(17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+    if (!g_linePen) {
+        g_linePen = CreatePen(PS_SOLID, 1, RGB(35, 45, 65));
+    }
+}
+
+static void freeGdiResources() {
+    if (g_titleFont) { DeleteObject(g_titleFont); g_titleFont = nullptr; }
+    if (g_subFont) { DeleteObject(g_subFont); g_subFont = nullptr; }
+    if (g_cardTitleFont) { DeleteObject(g_cardTitleFont); g_cardTitleFont = nullptr; }
+    if (g_linePen) { DeleteObject(g_linePen); g_linePen = nullptr; }
+}
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_ERASEBKGND:
+            return 1; // Prevent white background redraw flicker; WM_PAINT double buffers everything
+
+        case WM_USER + 101: {
+            // Asynchronous inventory scan completed in background
+            if (g_ui) {
+                g_ui->updateFilteredPackages();
+                RECT rc;
+                GetClientRect(hWnd, &rc);
+                g_ui->updateLayout(rc.right - rc.left, rc.bottom - rc.top);
+                InvalidateRect(hWnd, nullptr, FALSE);
+            }
+            return 0;
+        }
+
         case WM_SIZE: {
             if (g_ui) {
                 int w = LOWORD(lParam);
@@ -163,19 +231,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             // Title Bar
             SetBkMode(memDC, TRANSPARENT);
             SetTextColor(memDC, RGB(245, 248, 255));
-            HFONT titleFont = CreateFontW(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            HFONT oldFont = static_cast<HFONT>(SelectObject(memDC, titleFont));
+            HFONT oldFont = static_cast<HFONT>(SelectObject(memDC, g_titleFont));
 
             TextOutW(memDC, 24, 12, L"Mica Software Manager", 21);
 
-            HFONT subFont = CreateFontW(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-            SelectObject(memDC, subFont);
+            SelectObject(memDC, g_subFont);
             SetTextColor(memDC, RGB(120, 140, 170));
             TextOutW(memDC, 275, 18, L"Sovereign Desktop Package Center (MicaNT & Windows NT)", 54);
 
             // Tab bar underline
-            HPEN linePen = CreatePen(PS_SOLID, 1, RGB(35, 45, 65));
-            HPEN oldPen = static_cast<HPEN>(SelectObject(memDC, linePen));
+            HPEN oldPen = static_cast<HPEN>(SelectObject(memDC, g_linePen));
             MoveToEx(memDC, 0, 88, nullptr);
             LineTo(memDC, width, 88);
 
@@ -235,15 +300,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     FillRect(memDC, &cr, cBrush);
                     DeleteObject(cBrush);
 
-                    // Package title
-                    HFONT cardTitleFont = CreateFontW(17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-                    SelectObject(memDC, cardTitleFont);
+                    // Package title (using cached font)
+                    SelectObject(memDC, g_cardTitleFont);
                     SetTextColor(memDC, RGB(240, 245, 255));
 
                     std::wstring wname(pkg.name.begin(), pkg.name.end());
                     TextOutW(memDC, 36, cardY + 12, wname.c_str(), static_cast<int>(wname.size()));
 
-                    SelectObject(memDC, subFont);
+                    SelectObject(memDC, g_subFont);
                     SetTextColor(memDC, RGB(130, 150, 180));
                     std::string desc = pkg.vendor + " | v" + pkg.version + " | " + pkg.sourceToString() + " (" + pkg.architecture + ")";
                     std::wstring wdesc(desc.begin(), desc.end());
@@ -260,7 +324,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                     SetTextColor(memDC, RGB(255, 255, 255));
                     DrawTextW(memDC, isUp ? L"Update" : isInst ? L"Installed" : L"Get", -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-                    DeleteObject(cardTitleFont);
                     cardY += cardH + 10;
                 }
             } else if (g_ui->activeTab() == ManagerTab::Sideload) {
@@ -290,6 +353,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             DeleteObject(statBrush);
 
             SetTextColor(memDC, RGB(120, 140, 170));
+            SelectObject(memDC, g_subFont);
             std::wstring wstat(g_ui->statusMessage().begin(), g_ui->statusMessage().end());
             TextOutW(memDC, 16, height - 22, wstat.c_str(), static_cast<int>(wstat.size()));
 
@@ -300,14 +364,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             SelectObject(memDC, oldBmp);
             DeleteObject(memBmp);
             DeleteDC(memDC);
-            DeleteObject(titleFont);
-            DeleteObject(subFont);
-            DeleteObject(linePen);
 
             EndPaint(hWnd, &ps);
             return 0;
         }
         case WM_DESTROY: {
+            freeGdiResources();
             PostQuitMessage(0);
             return 0;
         }
@@ -337,9 +399,23 @@ int SoftwareManagerUI::runStandaloneWindow(int width, int height) {
 
     if (!hWnd) return 1;
 
+    initGdiResources();
+
     SoftwareManagerUI ui;
     g_ui = &ui;
     ui.updateLayout(width, height);
+    ui.setStatusMessage("MicaNT Sovereign Engine | Ready (Scanning system inventory in background...)");
+
+    // Launch background asynchronous inventory scan
+    MicaManager::instance().startAsyncScan([hWnd](size_t foundApps, size_t updatesCount) {
+        if (g_ui) {
+            std::string msg = "System scan complete: " + std::to_string(foundApps) + " apps detected (" + std::to_string(updatesCount) + " updates available)";
+            g_ui->setStatusMessage(msg);
+            if (hWnd && IsWindow(hWnd)) {
+                PostMessageW(hWnd, WM_USER + 101, 0, 0);
+            }
+        }
+    });
 
     ShowWindow(hWnd, SW_SHOW);
     UpdateWindow(hWnd);

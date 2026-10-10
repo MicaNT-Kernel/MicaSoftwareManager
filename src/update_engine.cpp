@@ -1,39 +1,113 @@
 #include <micamgr/update_engine.hpp>
 #include <micamgr/package.hpp>
+#include <micamgr/registry_scanner.hpp>
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <unordered_map>
+#include <cctype>
 
 namespace micamgr {
+
+static bool containsWord(std::string_view text, std::string_view word) noexcept {
+    if (word.empty() || text.empty() || word.size() > text.size()) return false;
+    size_t pos = 0;
+    while ((pos = text.find(word, pos)) != std::string_view::npos) {
+        bool leftBoundary = (pos == 0) || !std::isalnum(static_cast<unsigned char>(text[pos - 1]));
+        size_t after = pos + word.size();
+        bool rightBoundary = (after == text.size()) || !std::isalnum(static_cast<unsigned char>(text[after]));
+        if (leftBoundary && rightBoundary) return true;
+        pos += 1;
+    }
+    return false;
+}
+
+static std::string toLower(std::string_view sv) {
+    std::string s;
+    s.reserve(sv.size());
+    for (char c : sv) {
+        s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return s;
+}
 
 std::vector<PackageManifest> UpdateEngine::checkForUpdates(Catalog& catalog, const std::vector<InstalledAppInfo>& installedApps) {
     std::vector<PackageManifest> updates;
     auto allPkgs = catalog.allPackages();
 
-    for (auto& pkg : allPkgs) {
-        bool foundInstalled = false;
-        std::string foundVer;
-        std::string uninstStr;
+    struct IndexedPkg {
+        std::string id;
+        std::string lowerId;
+        std::string lowerName;
+        std::string subPart;
+    };
 
-        for (const auto& app : installedApps) {
-            std::string matched = app.matchedPackageId;
-            if (matched.empty()) {
-                matched = RegistryScanner::matchToCatalogId(app.displayName, allPkgs);
+    std::vector<IndexedPkg> indexed;
+    indexed.reserve(allPkgs.size());
+    std::unordered_map<std::string, std::string> exactIdMap;
+    std::unordered_map<std::string, std::string> exactNameMap;
+
+    for (const auto& p : allPkgs) {
+        std::string lid = toLower(p.id);
+        std::string lname = toLower(p.name);
+        exactIdMap[lid] = p.id;
+        exactNameMap[lname] = p.id;
+
+        std::string subPart;
+        auto dotPos = p.id.find('.');
+        if (dotPos != std::string::npos) {
+            subPart = toLower(p.id.substr(dotPos + 1));
+        }
+        indexed.push_back({ p.id, std::move(lid), std::move(lname), std::move(subPart) });
+    }
+
+    // Match installed apps in a SINGLE pass: O(InstalledApps) instead of O(Catalog * InstalledApps * Catalog)
+    std::unordered_map<std::string, const InstalledAppInfo*> matchedApps;
+    matchedApps.reserve(allPkgs.size());
+
+    for (const auto& app : installedApps) {
+        if (!app.matchedPackageId.empty()) {
+            matchedApps[app.matchedPackageId] = &app;
+            continue;
+        }
+
+        std::string lName = toLower(app.displayName);
+
+        // Pass 1: Exact ID hash lookup
+        auto itId = exactIdMap.find(lName);
+        if (itId != exactIdMap.end()) {
+            matchedApps[itId->second] = &app;
+            continue;
+        }
+
+        // Pass 2: Exact Name hash lookup
+        auto itName = exactNameMap.find(lName);
+        if (itName != exactNameMap.end()) {
+            matchedApps[itName->second] = &app;
+            continue;
+        }
+
+        // Pass 3: Word boundary match on tokens >= 3 chars
+        for (const auto& ip : indexed) {
+            if (ip.lowerName.length() >= 3 && containsWord(lName, ip.lowerName)) {
+                matchedApps[ip.id] = &app;
+                break;
             }
-
-            if (matched == pkg.id) {
-                foundInstalled = true;
-                foundVer = app.displayVersion;
-                uninstStr = app.uninstallString;
+            if (ip.subPart.length() >= 3 && containsWord(lName, ip.subPart)) {
+                matchedApps[ip.id] = &app;
                 break;
             }
         }
+    }
 
-        if (foundInstalled) {
-            pkg.installedVersion = foundVer;
-            pkg.uninstallString = uninstStr;
+    for (auto& pkg : allPkgs) {
+        auto it = matchedApps.find(pkg.id);
+        if (it != matchedApps.end()) {
+            const auto* app = it->second;
+            pkg.installedVersion = app->displayVersion;
+            pkg.uninstallString = app->uninstallString;
 
-            int cmp = PackageHelper::compareVersions(pkg.version, foundVer);
+            int cmp = PackageHelper::compareVersions(pkg.version, app->displayVersion);
             if (cmp > 0) {
                 pkg.state = InstallState::UpdateAvailable;
                 updates.push_back(pkg);
@@ -41,7 +115,6 @@ std::vector<PackageManifest> UpdateEngine::checkForUpdates(Catalog& catalog, con
                 pkg.state = InstallState::Installed;
             }
         } else if (pkg.state == InstallState::UpdateAvailable) {
-            // Already flagged in catalog defaults (e.g. Clean-Room Sentinel or NewPipe)
             updates.push_back(pkg);
         }
 

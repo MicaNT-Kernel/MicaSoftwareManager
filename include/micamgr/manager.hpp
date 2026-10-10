@@ -10,6 +10,9 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <mutex>
+#include <thread>
+#include <atomic>
 
 namespace micamgr {
 
@@ -30,8 +33,14 @@ public:
     /// Returns the list of currently installed applications discovered.
     [[nodiscard]] const std::vector<InstalledAppInfo>& installedApps() const noexcept { return installedApps_; }
 
-    /// Returns packages with available updates.
-    [[nodiscard]] std::vector<PackageManifest> checkUpdates();
+    /// Returns packages with available updates. If forceRefresh is false, uses cached inventory if available.
+    [[nodiscard]] std::vector<PackageManifest> checkUpdates(bool forceRefresh = false);
+
+    /// Starts an asynchronous system scan in a background worker thread.
+    void startAsyncScan(std::function<void(size_t discoveredApps, size_t updatesCount)> onComplete = nullptr);
+
+    /// Returns true if an asynchronous scan is currently underway.
+    [[nodiscard]] bool isScanning() const noexcept;
 
     /// Installs a package by ID.
     bool installPackage(std::string_view packageId, std::string& outMessage);
@@ -78,8 +87,11 @@ public:
 
 private:
     MicaManager();
-    ~MicaManager() = default;
+    ~MicaManager();
 
+    mutable std::mutex mutex_;
+    std::atomic<bool> isScanning_{false};
+    std::thread scanThread_;
     Catalog catalog_;
     std::vector<InstalledAppInfo> installedApps_;
     bool initialized_{false};
