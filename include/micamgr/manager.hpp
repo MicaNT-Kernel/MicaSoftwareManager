@@ -72,6 +72,10 @@ public:
     /// Imports and installs packages from an offline bundle pack.
     bool importBundle(const std::filesystem::path& bundleDir, std::string& outMessage);
 
+    /// Configures dry-run / simulation mode (useful for testing and preflight checks)
+    void setDryRun(bool dryRun) noexcept { dryRun_ = dryRun; }
+    [[nodiscard]] bool isDryRun() const noexcept { return dryRun_; }
+
 private:
     MicaManager();
     ~MicaManager() = default;
@@ -79,6 +83,7 @@ private:
     Catalog catalog_;
     std::vector<InstalledAppInfo> installedApps_;
     bool initialized_{false};
+    bool dryRun_{false};
 };
 
 } // namespace micamgr

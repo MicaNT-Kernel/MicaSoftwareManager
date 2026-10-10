@@ -26,15 +26,29 @@ static std::string readRegString(HKEY hKey, const wchar_t* valueName) {
     LONG res = RegQueryValueExW(hKey, valueName, nullptr, &type, nullptr, &bytes);
     if (res != ERROR_SUCCESS || bytes == 0) return {};
 
-    std::wstring wstr(bytes / sizeof(wchar_t), L'\0');
+    size_t wchars = (bytes / sizeof(wchar_t)) + 1;
+    std::wstring wstr(wchars, L'\0');
     res = RegQueryValueExW(hKey, valueName, nullptr, &type, reinterpret_cast<LPBYTE>(wstr.data()), &bytes);
     if (res != ERROR_SUCCESS) return {};
 
     while (!wstr.empty() && wstr.back() == L'\0') {
         wstr.pop_back();
     }
-
     if (wstr.empty()) return {};
+
+    if (type == REG_EXPAND_SZ) {
+        DWORD expChars = ExpandEnvironmentStringsW(wstr.c_str(), nullptr, 0);
+        if (expChars > 0) {
+            std::wstring expStr(expChars, L'\0');
+            if (ExpandEnvironmentStringsW(wstr.c_str(), expStr.data(), expChars) > 0) {
+                while (!expStr.empty() && expStr.back() == L'\0') {
+                    expStr.pop_back();
+                }
+                wstr = std::move(expStr);
+            }
+        }
+    }
+
     int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
     if (sizeNeeded <= 0) return {};
 
@@ -114,8 +128,9 @@ std::vector<InstalledAppInfo> RegistryScanner::scanInstalledApps() {
     scanRegistryKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_64KEY, apps);
     // Scan HKLM 32-bit
     scanRegistryKey(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_32KEY, apps);
-    // Scan HKCU
-    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", 0, apps);
+    // Scan HKCU 64-bit and 32-bit (per-user WOW64 enumeration)
+    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_64KEY, apps);
+    scanRegistryKey(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", KEY_WOW64_32KEY, apps);
 #endif
 
     // If zero apps discovered (e.g., container, sandbox, or Linux mock test), inject representative inventory
@@ -158,22 +173,43 @@ std::vector<InstalledAppInfo> RegistryScanner::scanInstalledApps() {
     return apps;
 }
 
+static bool containsWord(std::string_view text, std::string_view word) {
+    if (word.empty() || text.empty() || word.size() > text.size()) return false;
+    size_t pos = 0;
+    while ((pos = text.find(word, pos)) != std::string_view::npos) {
+        bool leftBoundary = (pos == 0) || !std::isalnum(static_cast<unsigned char>(text[pos - 1]));
+        size_t after = pos + word.size();
+        bool rightBoundary = (after == text.size()) || !std::isalnum(static_cast<unsigned char>(text[after]));
+        if (leftBoundary && rightBoundary) return true;
+        pos += 1;
+    }
+    return false;
+}
+
 std::string RegistryScanner::matchToCatalogId(const std::string& displayName, const std::vector<PackageManifest>& catalogPackages) {
     std::string lName = toLower(displayName);
 
+    // Pass 1: Exact match on package name or ID
     for (const auto& pkg : catalogPackages) {
         std::string lPkgName = toLower(pkg.name);
         std::string lPkgId = toLower(pkg.id);
+        if (lName == lPkgName || lName == lPkgId) {
+            return pkg.id;
+        }
+    }
 
-        if (lName == lPkgName || lName.find(lPkgName) != std::string::npos || lPkgName.find(lName) != std::string::npos) {
+    // Pass 2: Word-boundary / token-based match (eliminates false positives from short substrings)
+    for (const auto& pkg : catalogPackages) {
+        std::string lPkgName = toLower(pkg.name);
+        if (containsWord(lName, lPkgName)) {
             return pkg.id;
         }
 
-        // Check common WinGet patterns like Mozilla.Firefox
+        // Check common WinGet patterns like Mozilla.Firefox (match subpart 'firefox')
         auto dotPos = pkg.id.find('.');
         if (dotPos != std::string::npos) {
             std::string subPart = toLower(pkg.id.substr(dotPos + 1));
-            if (lName.find(subPart) != std::string::npos) {
+            if (subPart.length() >= 3 && containsWord(lName, subPart)) {
                 return pkg.id;
             }
         }

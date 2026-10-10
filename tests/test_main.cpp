@@ -123,6 +123,13 @@ void Test_Registry_Scanner_And_Matching() {
     std::string matchedCode = micamgr::RegistryScanner::matchToCatalogId("Microsoft Visual Studio Code", pkgs);
     TEST_ASSERT(matchedCode == "Microsoft.VisualStudioCode", "Correlated Visual Studio Code");
 
+    // Regression tests: Short names must not trigger false positive reverse matches
+    std::string falseMatchGo = micamgr::RegistryScanner::matchToCatalogId("Go", pkgs);
+    TEST_ASSERT(falseMatchGo.empty(), "Short name 'Go' must not falsely match Google Chrome or other packages");
+
+    std::string falseMatchTerm = micamgr::RegistryScanner::matchToCatalogId("Term", pkgs);
+    TEST_ASSERT(falseMatchTerm.empty(), "Short name 'Term' must not falsely match Windows Terminal");
+
     std::cout << "[TEST] Suite 3: Installed Apps Scanner & Catalog Correlation PASSED.\n";
 }
 
@@ -392,6 +399,9 @@ int main() {
     std::cout << "Mica Software Manager (micamgr) Verification Suite\n";
     std::cout << "Standard: ISO C++23 | Zero Dependencies | Clean-Room Provenance\n";
     std::cout << "======================================================================\n";
+
+    // Configure test environment to dry-run (simulation) mode
+    micamgr::MicaManager::instance().setDryRun(true);
 
     Test_Package_Helpers_And_Json();
     Test_Catalog_Engine();
