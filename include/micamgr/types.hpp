@@ -63,6 +63,7 @@ struct PackageManifest {
     InstallState state{InstallState::NotInstalled};
     std::string uninstallString;
     uint64_t installSizeBytes{0};
+    bool isPinned{false};
 
     [[nodiscard]] bool isUpdateAvailable() const noexcept {
         return state == InstallState::UpdateAvailable;
@@ -105,6 +106,22 @@ struct SideloadInspectResult {
     std::string packageId;
     std::string version;
     std::string errorMessage;
+};
+
+struct CuratedStack {
+    std::string id;
+    std::string name;
+    std::string description;
+    std::string category;
+    std::vector<std::string> packageIds;
+};
+
+struct OfflineBundle {
+    std::string name;
+    std::string version{"1.0.0"};
+    std::string createdDate;
+    std::string targetOs{"MicaNT / Windows NT"};
+    std::vector<PackageManifest> packages;
 };
 
 } // namespace micamgr

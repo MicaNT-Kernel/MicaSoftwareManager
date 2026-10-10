@@ -423,6 +423,36 @@ size_t Catalog::size() const {
     return packages_.size();
 }
 
+bool Catalog::pinPackage(std::string_view id, bool pin) {
+    std::lock_guard lock(mutex_);
+    for (auto& pkg : packages_) {
+        if (pkg.id == id) {
+            pkg.isPinned = pin;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Catalog::isPinned(std::string_view id) const {
+    std::lock_guard lock(mutex_);
+    for (const auto& pkg : packages_) {
+        if (pkg.id == id) return pkg.isPinned;
+    }
+    return false;
+}
+
+std::vector<PackageManifest> Catalog::pinnedPackages() const {
+    std::lock_guard lock(mutex_);
+    std::vector<PackageManifest> results;
+    for (const auto& pkg : packages_) {
+        if (pkg.isPinned) {
+            results.push_back(pkg);
+        }
+    }
+    return results;
+}
+
 bool Catalog::loadFromJson(std::string_view json) {
     auto parsed = PackageHelper::fromManifestListJson(json);
     if (parsed.empty()) return false;

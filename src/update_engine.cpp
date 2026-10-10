@@ -59,6 +59,13 @@ UpdateReport UpdateEngine::updatePackage(const PackageManifest& pkg, ProgressCal
     report.newVersion = pkg.version;
     report.source = pkg.source;
 
+    if (pkg.isPinned) {
+        report.success = false;
+        report.message = "Skipped: Package " + pkg.name + " (" + pkg.id + ") is pinned to version " + pkg.installedVersion;
+        if (onProgress) onProgress(pkg.id, 1.0f, report.message);
+        return report;
+    }
+
     if (onProgress) onProgress(pkg.id, 0.1f, "Connecting to repository...");
 
     // Simulated/actual update pipeline
@@ -80,6 +87,9 @@ std::vector<UpdateReport> UpdateEngine::updateAll(const std::vector<PackageManif
 
     for (size_t i = 0; i < pendingUpdates.size(); ++i) {
         const auto& pkg = pendingUpdates[i];
+        if (pkg.isPinned) {
+            continue; // Skip pinned packages in batch upgrade
+        }
         if (onProgress) {
             float baseProgress = static_cast<float>(i) / static_cast<float>(pendingUpdates.size());
             onProgress(pkg.id, baseProgress, "Updating " + pkg.name + " (" + std::to_string(i + 1) + "/" + std::to_string(pendingUpdates.size()) + ")...");
@@ -88,7 +98,7 @@ std::vector<UpdateReport> UpdateEngine::updateAll(const std::vector<PackageManif
     }
 
     if (onProgress) {
-        onProgress("ALL", 1.0f, "All packages up to date");
+        onProgress("ALL", 1.0f, "All eligible packages updated");
     }
 
     return results;

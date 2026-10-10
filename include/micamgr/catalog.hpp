@@ -38,6 +38,15 @@ public:
     /// Total count of packages.
     [[nodiscard]] size_t size() const;
 
+    /// Sets the pinned status of a package by ID.
+    bool pinPackage(std::string_view id, bool pin = true);
+
+    /// Checks if a package is pinned to prevent automatic upgrades.
+    [[nodiscard]] bool isPinned(std::string_view id) const;
+
+    /// Returns all pinned packages.
+    [[nodiscard]] std::vector<PackageManifest> pinnedPackages() const;
+
     /// Loads external catalog JSON data.
     bool loadFromJson(std::string_view json);
 

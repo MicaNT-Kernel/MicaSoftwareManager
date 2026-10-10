@@ -289,6 +289,104 @@ void Test_Software_Manager_UI() {
     std::cout << "[TEST] Suite 8: SoftwareManagerUI Layout & Interaction PASSED.\n";
 }
 
+void Test_Package_Pinning() {
+    std::cout << "[TEST] Running Suite 9: Package Version Pinning & Protection...\n";
+
+    auto& mgr = micamgr::MicaManager::instance();
+    TEST_ASSERT(!mgr.isPackagePinned("7zip.7zip"), "7zip starts unpinned");
+
+    bool pinOk = mgr.pinPackage("7zip.7zip", true);
+    TEST_ASSERT(pinOk, "pinPackage returned true");
+    TEST_ASSERT(mgr.isPackagePinned("7zip.7zip"), "7zip is now pinned");
+
+    auto pinned = mgr.pinnedPackages();
+    TEST_ASSERT(pinned.size() >= 1, "pinnedPackages contains at least 1 package");
+    bool found7z = false;
+    for (const auto& p : pinned) {
+        if (p.id == "7zip.7zip") {
+            found7z = true;
+            TEST_ASSERT(p.isPinned, "p.isPinned is true");
+            break;
+        }
+    }
+    TEST_ASSERT(found7z, "7zip.7zip found in pinned list");
+
+    // Test that UpdateEngine skips or reports failure when upgrading a pinned package
+    auto optPkg = mgr.catalog().findById("7zip.7zip");
+    TEST_ASSERT(optPkg.has_value(), "7zip found in catalog");
+    auto rep = micamgr::UpdateEngine::updatePackage(*optPkg);
+    TEST_ASSERT(!rep.success, "updatePackage skipped on pinned package");
+    TEST_ASSERT(rep.message.find("pinned") != std::string::npos, "Message mentions pinned status");
+
+    // Unpin
+    bool unpinOk = mgr.pinPackage("7zip.7zip", false);
+    TEST_ASSERT(unpinOk, "unpinPackage returned true");
+    TEST_ASSERT(!mgr.isPackagePinned("7zip.7zip"), "7zip is unpinned");
+
+    std::cout << "[TEST] Suite 9: Package Version Pinning & Protection PASSED.\n";
+}
+
+void Test_Curated_Stacks() {
+    std::cout << "[TEST] Running Suite 10: Curated Sovereign Software Stacks...\n";
+
+    auto& mgr = micamgr::MicaManager::instance();
+    auto stacks = mgr.curatedStacks();
+    TEST_ASSERT(stacks.size() >= 4, "At least 4 curated stacks defined");
+
+    bool foundDev = false;
+    for (const auto& s : stacks) {
+        if (s.id == "developer") {
+            foundDev = true;
+            TEST_ASSERT(s.packageIds.size() >= 3, "Developer stack has multiple packages");
+            break;
+        }
+    }
+    TEST_ASSERT(foundDev, "Developer stack found");
+
+    std::string msg;
+    auto installed = mgr.installCuratedStack("developer", msg);
+    TEST_ASSERT(!installed.empty(), "installCuratedStack provisioned developer packages");
+    TEST_ASSERT(msg.find("Developer Sovereign Stack") != std::string::npos, "Log message contains stack title");
+
+    std::cout << "[TEST] Suite 10: Curated Sovereign Software Stacks PASSED.\n";
+}
+
+void Test_Offline_Bundle_Export_Import() {
+    std::cout << "[TEST] Running Suite 11: Air-Gapped / Offline Bundle Pack...\n";
+
+    auto& mgr = micamgr::MicaManager::instance();
+    std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "micant_bundle_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tempDir, ec);
+
+    std::string msg;
+    bool exported = mgr.exportBundle(tempDir, {"7zip.7zip", "Mozilla.Firefox"}, msg);
+    TEST_ASSERT(exported, "exportBundle succeeded");
+    TEST_ASSERT(std::filesystem::exists(tempDir / "micant_bundle.json"), "micant_bundle.json written to disk");
+
+    std::string importMsg;
+    bool imported = mgr.importBundle(tempDir, importMsg);
+    TEST_ASSERT(imported, "importBundle succeeded");
+    TEST_ASSERT(importMsg.find("imported offline bundle") != std::string::npos, "Import message reports success");
+
+    std::filesystem::remove_all(tempDir, ec);
+    std::cout << "[TEST] Suite 11: Air-Gapped / Offline Bundle Pack PASSED.\n";
+}
+
+void Test_Package_Details_Inspection() {
+    std::cout << "[TEST] Running Suite 12: Package Details & Manifest Inspection...\n";
+
+    auto& mgr = micamgr::MicaManager::instance();
+    auto optPkg = mgr.getPackageDetails("Mozilla.Firefox");
+    TEST_ASSERT(optPkg.has_value(), "getPackageDetails found Firefox");
+    TEST_ASSERT(optPkg->vendor == "Mozilla Foundation", "Vendor is Mozilla Foundation");
+    TEST_ASSERT(!optPkg->sha256.empty(), "SHA-256 is present");
+    TEST_ASSERT(!optPkg->downloadUrl.empty(), "Download URL is present");
+    TEST_ASSERT(!optPkg->license.empty(), "License is present");
+
+    std::cout << "[TEST] Suite 12: Package Details & Manifest Inspection PASSED.\n";
+}
+
 int main() {
     std::cout << "======================================================================\n";
     std::cout << "Mica Software Manager (micamgr) Verification Suite\n";
@@ -303,9 +401,13 @@ int main() {
     Test_Sideload_Execution();
     Test_Master_MicaManager();
     Test_Software_Manager_UI();
+    Test_Package_Pinning();
+    Test_Curated_Stacks();
+    Test_Offline_Bundle_Export_Import();
+    Test_Package_Details_Inspection();
 
     std::cout << "======================================================================\n";
-    std::cout << "ALL 8 MICA SOFTWARE MANAGER SUBSYSTEM TESTS PASSED (100% SUCCESS)\n";
+    std::cout << "ALL 12 MICA SOFTWARE MANAGER SUBSYSTEM TESTS PASSED (100% SUCCESS)\n";
     std::cout << "======================================================================\n";
 
     return 0;

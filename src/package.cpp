@@ -77,6 +77,7 @@ std::string PackageHelper::toJson(const PackageManifest& pkg) {
     ss << "      \"description\": \"" << escapeJson(pkg.description) << "\",\n";
     ss << "      \"icon_glyph\": \"" << escapeJson(pkg.iconGlyph) << "\",\n";
     ss << "      \"icon_id\": \"" << escapeJson(pkg.iconId) << "\",\n";
+    ss << "      \"is_pinned\": " << (pkg.isPinned ? "true" : "false") << ",\n";
     ss << "      \"state\": " << static_cast<int>(pkg.state) << "\n";
     ss << "    }";
     return ss.str();
@@ -99,6 +100,11 @@ std::optional<PackageManifest> PackageHelper::fromJson(std::string_view json) {
     pkg.description = extractField(json, "description");
     pkg.iconGlyph = extractField(json, "icon_glyph");
     pkg.iconId = extractField(json, "icon_id");
+
+    std::string pinStr = extractField(json, "is_pinned");
+    if (pinStr == "true" || pinStr == "1") {
+        pkg.isPinned = true;
+    }
 
     std::string catStr = extractField(json, "category");
     if (catStr == "Featured") pkg.category = PackageCategory::Featured;
@@ -166,6 +172,35 @@ std::vector<PackageManifest> PackageHelper::fromManifestListJson(std::string_vie
         pos = objEnd + 1;
     }
     return list;
+}
+
+std::string PackageHelper::toBundleJson(const OfflineBundle& bundle) {
+    std::ostringstream ss;
+    ss << "{\n";
+    ss << "  \"bundle_name\": \"" << escapeJson(bundle.name) << "\",\n";
+    ss << "  \"version\": \"" << escapeJson(bundle.version) << "\",\n";
+    ss << "  \"created_date\": \"" << escapeJson(bundle.createdDate) << "\",\n";
+    ss << "  \"target_os\": \"" << escapeJson(bundle.targetOs) << "\",\n";
+    ss << "  \"count\": " << bundle.packages.size() << ",\n";
+    ss << "  \"packages\": [\n";
+    for (size_t i = 0; i < bundle.packages.size(); ++i) {
+        ss << toJson(bundle.packages[i]);
+        if (i + 1 < bundle.packages.size()) ss << ",";
+        ss << "\n";
+    }
+    ss << "  ]\n";
+    ss << "}\n";
+    return ss.str();
+}
+
+std::optional<OfflineBundle> PackageHelper::fromBundleJson(std::string_view json) {
+    OfflineBundle bundle;
+    bundle.name = extractField(json, "bundle_name");
+    bundle.version = extractField(json, "version");
+    bundle.createdDate = extractField(json, "created_date");
+    bundle.targetOs = extractField(json, "target_os");
+    bundle.packages = fromManifestListJson(json);
+    return bundle;
 }
 
 } // namespace micamgr

@@ -18,9 +18,15 @@ void CliHandler::printUsage() {
     std::cout << "  list [options]          List software packages\n";
     std::cout << "         --installed      List currently installed applications on this machine\n";
     std::cout << "         --updates        List packages with pending upgrades available\n";
+    std::cout << "         --pinned         List software packages with version locks\n";
+    std::cout << "  info <package_id>       Inspect detailed package manifest, SHA-256, and origin\n";
     std::cout << "  install <package_id>    Install or provision a software package\n";
     std::cout << "  uninstall <package_id>  Uninstall an application\n";
     std::cout << "  update [--all]          Check for updates or upgrade all outdated software\n";
+    std::cout << "  pin <package_id>        Lock a package to prevent automatic upgrades\n";
+    std::cout << "  unpin <package_id>      Unlock package to allow updates\n";
+    std::cout << "  stack [list|install]    Manage and deploy curated sovereign software stacks\n";
+    std::cout << "  bundle [export|import]  Export or import air-gapped offline installer bundles\n";
     std::cout << "  inspect <file_path>     Inspect an installer file (.exe, .msix, .apk, .zip)\n";
     std::cout << "  gui                     Launch the modern sovereign desktop interface\n";
     std::cout << "  version, -v             Print version information\n";
@@ -80,11 +86,32 @@ int CliHandler::run(int argc, char* argv[]) {
     if (cmd == "list") {
         bool showInstalled = false;
         bool showUpdates = false;
+        bool showPinned = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
             if (arg == "--installed") showInstalled = true;
             else if (arg == "--updates") showUpdates = true;
+            else if (arg == "--pinned") showPinned = true;
+        }
+
+        if (showPinned) {
+            auto pinned = mgr.pinnedPackages();
+            std::cout << "\nPinned Software Packages (" << pinned.size() << "):\n";
+            std::cout << "------------------------------------------------------------------------------------\n";
+            std::cout << std::left << std::setw(30) << "Package ID"
+                      << std::setw(28) << "Name"
+                      << std::setw(14) << "Pinned Ver"
+                      << "Status\n";
+            std::cout << "------------------------------------------------------------------------------------\n";
+            for (const auto& p : pinned) {
+                std::cout << std::left << std::setw(30) << p.id
+                          << std::setw(28) << p.name
+                          << std::setw(14) << (p.installedVersion.empty() ? p.version : p.installedVersion)
+                          << "PINNED (Locked)\n";
+            }
+            std::cout << "\n";
+            return 0;
         }
 
         if (showUpdates) {
@@ -193,6 +220,134 @@ int CliHandler::run(int argc, char* argv[]) {
             }
             std::cout << "Run 'micamgr update --all' to apply.\n";
             return 0;
+        }
+    }
+
+    if (cmd == "pin") {
+        if (argc < 3) {
+            std::cerr << "Error: 'pin' requires a package ID.\n";
+            return 1;
+        }
+        std::string pkgId = argv[2];
+        bool ok = mgr.pinPackage(pkgId, true);
+        if (ok) {
+            std::cout << "[MicaManager] Package '" << pkgId << "' successfully pinned to current version.\n";
+            return 0;
+        } else {
+            std::cerr << "Error: Package '" << pkgId << "' not found in catalog.\n";
+            return 1;
+        }
+    }
+
+    if (cmd == "unpin") {
+        if (argc < 3) {
+            std::cerr << "Error: 'unpin' requires a package ID.\n";
+            return 1;
+        }
+        std::string pkgId = argv[2];
+        bool ok = mgr.pinPackage(pkgId, false);
+        if (ok) {
+            std::cout << "[MicaManager] Package '" << pkgId << "' unpinned. Updates re-enabled.\n";
+            return 0;
+        } else {
+            std::cerr << "Error: Package '" << pkgId << "' not found in catalog.\n";
+            return 1;
+        }
+    }
+
+    if (cmd == "info") {
+        if (argc < 3) {
+            std::cerr << "Error: 'info' requires a package ID.\n";
+            return 1;
+        }
+        std::string pkgId = argv[2];
+        auto optPkg = mgr.getPackageDetails(pkgId);
+        if (!optPkg) {
+            std::cerr << "Error: Package '" << pkgId << "' not found.\n";
+            return 1;
+        }
+        const auto& p = *optPkg;
+        std::cout << "\nPackage Manifest Inspector:\n";
+        std::cout << "  Identifier:        " << p.id << "\n";
+        std::cout << "  Display Name:      " << p.name << "\n";
+        std::cout << "  Catalog Version:   v" << p.version << "\n";
+        std::cout << "  Installed Version: " << (p.installedVersion.empty() ? "(Not Installed)" : ("v" + p.installedVersion)) << "\n";
+        std::cout << "  Pinned:            " << (p.isPinned ? "YES (Upgrades Locked)" : "No") << "\n";
+        std::cout << "  Vendor/Publisher:  " << p.vendor << "\n";
+        std::cout << "  License:           " << p.license << "\n";
+        std::cout << "  Category:          " << p.categoryToString() << "\n";
+        std::cout << "  Source Subsystem:  " << p.sourceToString() << "\n";
+        std::cout << "  Architecture:      " << p.architecture << "\n";
+        std::cout << "  Homepage:          " << p.homepage << "\n";
+        std::cout << "  Download URL:      " << p.downloadUrl << "\n";
+        std::cout << "  FIPS SHA-256:      " << p.sha256 << "\n";
+        std::cout << "  Description:       " << p.description << "\n\n";
+        return 0;
+    }
+
+    if (cmd == "stack") {
+        if (argc < 3 || std::string(argv[2]) == "list") {
+            auto stacks = mgr.curatedStacks();
+            std::cout << "\nCurated Sovereign Software Stacks (" << stacks.size() << "):\n";
+            std::cout << "------------------------------------------------------------------------------------\n";
+            for (const auto& s : stacks) {
+                std::cout << "  [" << s.id << "] " << s.name << " (" << s.category << ")\n";
+                std::cout << "      " << s.description << "\n";
+                std::cout << "      Packages: ";
+                for (size_t i = 0; i < s.packageIds.size(); ++i) {
+                    std::cout << s.packageIds[i] << (i + 1 < s.packageIds.size() ? ", " : "\n");
+                }
+                std::cout << "\n";
+            }
+            std::cout << "Run 'micamgr stack install <stack_id>' to provision an entire curated stack.\n\n";
+            return 0;
+        }
+
+        if (std::string(argv[2]) == "install") {
+            if (argc < 4) {
+                std::cerr << "Error: 'stack install' requires a stack ID (e.g. developer, privacy, media, utilities).\n";
+                return 1;
+            }
+            std::string stackId = argv[3];
+            std::string log;
+            auto installed = mgr.installCuratedStack(stackId, log);
+            std::cout << log << "\n";
+            return installed.empty() ? 1 : 0;
+        }
+    }
+
+    if (cmd == "bundle") {
+        if (argc < 3) {
+            std::cerr << "Usage: micamgr bundle export <target_dir> [package_ids...]\n";
+            std::cerr << "       micamgr bundle import <bundle_dir_or_json>\n";
+            return 1;
+        }
+        std::string sub = argv[2];
+        if (sub == "export") {
+            if (argc < 4) {
+                std::cerr << "Error: 'bundle export' requires a target directory path.\n";
+                return 1;
+            }
+            std::filesystem::path targetDir = argv[3];
+            std::vector<std::string> pkgIds;
+            for (int i = 4; i < argc; ++i) {
+                pkgIds.push_back(argv[i]);
+            }
+            std::string msg;
+            bool ok = mgr.exportBundle(targetDir, pkgIds, msg);
+            std::cout << msg << "\n";
+            return ok ? 0 : 1;
+        }
+        if (sub == "import") {
+            if (argc < 4) {
+                std::cerr << "Error: 'bundle import' requires a bundle directory or micant_bundle.json file path.\n";
+                return 1;
+            }
+            std::filesystem::path bundlePath = argv[3];
+            std::string msg;
+            bool ok = mgr.importBundle(bundlePath, msg);
+            std::cout << msg << "\n";
+            return ok ? 0 : 1;
         }
     }
 

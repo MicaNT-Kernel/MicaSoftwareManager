@@ -25,6 +25,12 @@ public:
 
     /// Parses a collection of package manifests from a JSON array string.
     static std::vector<PackageManifest> fromManifestListJson(std::string_view json);
+
+    /// Serializes an offline bundle to a JSON string.
+    static std::string toBundleJson(const OfflineBundle& bundle);
+
+    /// Parses an offline bundle from a JSON string.
+    static std::optional<OfflineBundle> fromBundleJson(std::string_view json);
 };
 
 } // namespace micamgr

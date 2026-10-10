@@ -48,6 +48,30 @@ public:
     /// Installs a local inspected package file.
     bool sideloadFile(const std::filesystem::path& path, std::string& outMessage);
 
+    /// Pins or unpins a package version to prevent accidental upgrades.
+    bool pinPackage(std::string_view packageId, bool pin = true);
+
+    /// Checks if a package is pinned.
+    [[nodiscard]] bool isPackagePinned(std::string_view packageId) const;
+
+    /// Returns list of all pinned packages.
+    [[nodiscard]] std::vector<PackageManifest> pinnedPackages() const;
+
+    /// Retrieves full manifest inspection details for a package.
+    [[nodiscard]] std::optional<PackageManifest> getPackageDetails(std::string_view packageId) const;
+
+    /// Returns curated sovereign software stacks.
+    [[nodiscard]] std::vector<CuratedStack> curatedStacks() const;
+
+    /// Installs all packages in a curated stack.
+    std::vector<std::string> installCuratedStack(std::string_view stackId, std::string& outMessage);
+
+    /// Exports a self-contained offline bundle pack.
+    bool exportBundle(const std::filesystem::path& targetDir, const std::vector<std::string>& packageIds, std::string& outMessage);
+
+    /// Imports and installs packages from an offline bundle pack.
+    bool importBundle(const std::filesystem::path& bundleDir, std::string& outMessage);
+
 private:
     MicaManager();
     ~MicaManager() = default;
