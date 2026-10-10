@@ -112,21 +112,62 @@ void MicaManager::initialize() {
         }
     }
 
+    loadSources();
     initialized_ = true;
     // NOTE: Non-blocking sovereign startup. Registry scan is performed lazily or asynchronously.
 }
 
+static std::string sanitizePackageId(std::string_view name) {
+    std::string id;
+    id.reserve(name.size());
+    for (char c : name) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '.' || c == '-' || c == '_') {
+            id.push_back(c);
+        } else if (c == ' ') {
+            id.push_back('.');
+        }
+    }
+    return id.empty() ? "unknown" : id;
+}
+
 void MicaManager::refreshInstalledApps() {
     auto apps = RegistryScanner::scanInstalledApps();
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard lock(mutex_);
     installedApps_ = std::move(apps);
     UpdateEngine::checkForUpdates(catalog_, installedApps_);
+
+    // Real Data Ingestion: Add discovered genuine installed apps to catalog so Library displays real inventory!
+    for (const auto& app : installedApps_) {
+        std::string pkgId = app.matchedPackageId;
+        if (pkgId.empty()) {
+            pkgId = "installed." + sanitizePackageId(app.displayName);
+        }
+        // If not already in catalog, register as real installed app
+        if (!catalog_.findById(pkgId)) {
+            PackageManifest p;
+            p.id = std::move(pkgId);
+            p.name = app.displayName;
+            p.version = app.displayVersion.empty() ? "1.0.0" : app.displayVersion;
+            p.installedVersion = app.displayVersion;
+            p.vendor = app.publisher.empty() ? "Local Software" : app.publisher;
+            p.license = "Commercial / Open Source";
+            p.architecture = "x64";
+            p.category = PackageCategory::Utilities;
+            p.source = (p.id.find('.') != std::string::npos && !app.matchedPackageId.empty()) ? PackageSource::WinGet : PackageSource::MicaNative;
+            p.uninstallString = app.uninstallString;
+            p.description = (app.publisher.empty() ? "Installed application" : ("Published by " + app.publisher)) +
+                            (app.installLocation.empty() ? "" : (" | Location: " + app.installLocation));
+            p.state = InstallState::Installed;
+            p.iconId = "Package";
+            catalog_.addOrUpdatePackage(p);
+        }
+    }
 }
 
 std::vector<PackageManifest> MicaManager::checkUpdates(bool forceRefresh) {
     bool doScan = false;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard lock(mutex_);
         if (installedApps_.empty() || forceRefresh) {
             doScan = true;
         }
@@ -134,7 +175,7 @@ std::vector<PackageManifest> MicaManager::checkUpdates(bool forceRefresh) {
     if (doScan) {
         refreshInstalledApps();
     }
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard lock(mutex_);
     return catalog_.filterByCategory(PackageCategory::Updates);
 }
 
@@ -152,7 +193,7 @@ void MicaManager::startAsyncScan(std::function<void(size_t, size_t)> onComplete)
             size_t appsCount = 0;
             size_t updatesCount = 0;
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard lock(mutex_);
                 appsCount = installedApps_.size();
                 updatesCount = catalog_.filterByCategory(PackageCategory::Updates).size();
             }
@@ -478,6 +519,222 @@ bool MicaManager::importBundle(const std::filesystem::path& bundleDir, std::stri
     }
 
     outMessage = "Successfully imported offline bundle '" + optBundle->name + "' (" + std::to_string(imported) + " packages added to catalog).";
+    return true;
+}
+
+static std::filesystem::path getSourcesConfigPath() {
+#ifdef _WIN32
+    const char* localApp = std::getenv("LOCALAPPDATA");
+    if (localApp && *localApp) {
+        std::filesystem::path p = std::filesystem::path(localApp) / "MicaNT";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return p / "micamgr_sources.json";
+    }
+#endif
+    return "micamgr_sources.json";
+}
+
+void MicaManager::loadSources() {
+    std::lock_guard lock(mutex_);
+    sources_.clear();
+
+    // Default built-in system sources
+    sources_.push_back({
+        .id = "micant-apps",
+        .name = "MicaNT Sovereign Repository (Barrer Software)",
+        .urlOrPath = "https://github.com/MicaNT-Kernel/micant-apps",
+        .type = "MicaNT.Native",
+        .isEnabled = true,
+        .isDefault = true
+    });
+    sources_.push_back({
+        .id = "winget-pkgs",
+        .name = "Windows Package Manager (microsoft/winget-pkgs)",
+        .urlOrPath = "https://github.com/microsoft/winget-pkgs",
+        .type = "WinGet.Git",
+        .isEnabled = true,
+        .isDefault = true
+    });
+    sources_.push_back({
+        .id = "aosp-foss",
+        .name = "Clean-Room AOSP Repository (MicaG Attestation)",
+        .urlOrPath = "https://f-droid.org/repo",
+        .type = "AOSP.WSA",
+        .isEnabled = true,
+        .isDefault = true
+    });
+
+    std::filesystem::path p = getSourcesConfigPath();
+    if (!std::filesystem::exists(p)) return;
+
+    std::ifstream ifs(p);
+    if (!ifs) return;
+    std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+
+    size_t objStart = 0;
+    while ((objStart = content.find('{', objStart)) != std::string::npos) {
+        size_t objEnd = content.find('}', objStart);
+        if (objEnd == std::string::npos) break;
+        std::string chunk = content.substr(objStart, objEnd - objStart + 1);
+
+        auto extractStr = [&](std::string_view key) -> std::string {
+            std::string pat = "\"" + std::string(key) + "\"";
+            size_t kpos = chunk.find(pat);
+            if (kpos == std::string::npos) return {};
+            size_t colon = chunk.find(':', kpos + pat.size());
+            if (colon == std::string::npos) return {};
+            size_t q1 = chunk.find('"', colon);
+            if (q1 == std::string::npos) return {};
+            size_t q2 = chunk.find('"', q1 + 1);
+            if (q2 == std::string::npos) return {};
+            return chunk.substr(q1 + 1, q2 - q1 - 1);
+        };
+
+        auto extractBool = [&](std::string_view key, bool defVal) -> bool {
+            std::string pat = "\"" + std::string(key) + "\"";
+            size_t kpos = chunk.find(pat);
+            if (kpos == std::string::npos) return defVal;
+            size_t colon = chunk.find(':', kpos + pat.size());
+            if (colon == std::string::npos) return defVal;
+            std::string rest = chunk.substr(colon + 1);
+            if (rest.find("true") < rest.find("false")) return true;
+            if (rest.find("false") != std::string::npos) return false;
+            return defVal;
+        };
+
+        std::string sid = extractStr("id");
+        if (!sid.empty()) {
+            bool found = false;
+            for (auto& s : sources_) {
+                if (s.id == sid) {
+                    s.isEnabled = extractBool("enabled", s.isEnabled);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                RepositorySource custom;
+                custom.id = sid;
+                custom.name = extractStr("name");
+                custom.urlOrPath = extractStr("url");
+                custom.type = extractStr("type");
+                if (custom.type.empty()) custom.type = "Custom.Http";
+                custom.isEnabled = extractBool("enabled", true);
+                custom.isDefault = extractBool("default", false);
+                sources_.push_back(std::move(custom));
+            }
+        }
+        objStart = objEnd + 1;
+    }
+}
+
+bool MicaManager::saveSources() {
+    std::lock_guard lock(mutex_);
+    std::filesystem::path p = getSourcesConfigPath();
+    std::ofstream ofs(p);
+    if (!ofs) return false;
+
+    ofs << "[\n";
+    for (size_t i = 0; i < sources_.size(); ++i) {
+        const auto& s = sources_[i];
+        ofs << "  {\n";
+        ofs << "    \"id\": \"" << s.id << "\",\n";
+        ofs << "    \"name\": \"" << s.name << "\",\n";
+        ofs << "    \"url\": \"" << s.urlOrPath << "\",\n";
+        ofs << "    \"type\": \"" << s.type << "\",\n";
+        ofs << "    \"enabled\": " << (s.isEnabled ? "true" : "false") << ",\n";
+        ofs << "    \"default\": " << (s.isDefault ? "true" : "false") << "\n";
+        ofs << "  }" << (i + 1 < sources_.size() ? ",\n" : "\n");
+    }
+    ofs << "]\n";
+    return true;
+}
+
+std::vector<RepositorySource> MicaManager::getSources() const {
+    std::lock_guard lock(mutex_);
+    return sources_;
+}
+
+bool MicaManager::addSource(const RepositorySource& source, std::string& outMessage) {
+    if (source.id.empty() || source.name.empty() || source.urlOrPath.empty()) {
+        outMessage = "Error: Source ID, Name, and URL cannot be empty.";
+        return false;
+    }
+    {
+        std::lock_guard lock(mutex_);
+        for (const auto& s : sources_) {
+            if (s.id == source.id) {
+                outMessage = "Error: Source with ID '" + source.id + "' already exists.";
+                return false;
+            }
+        }
+        sources_.push_back(source);
+    }
+    saveSources();
+    outMessage = "Successfully registered new repository source: " + source.name + " (" + source.id + ")";
+    return true;
+}
+
+bool MicaManager::setSourceEnabled(std::string_view sourceId, bool enabled, std::string& outMessage) {
+    bool found = false;
+    std::string sName;
+    {
+        std::lock_guard lock(mutex_);
+        for (auto& s : sources_) {
+            if (s.id == sourceId) {
+                s.isEnabled = enabled;
+                sName = s.name;
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        outMessage = "Error: Repository source '" + std::string(sourceId) + "' not found.";
+        return false;
+    }
+    saveSources();
+    outMessage = (enabled ? "Enabled" : "Disabled") + std::string(" repository source: ") + sName;
+    return true;
+}
+
+bool MicaManager::removeSource(std::string_view sourceId, std::string& outMessage) {
+    bool removed = false;
+    std::string sName;
+    {
+        std::lock_guard lock(mutex_);
+        for (auto it = sources_.begin(); it != sources_.end(); ++it) {
+            if (it->id == sourceId) {
+                if (it->isDefault) {
+                    outMessage = "Error: Built-in system source '" + it->name + "' cannot be deleted (you may disable it instead).";
+                    return false;
+                }
+                sName = it->name;
+                sources_.erase(it);
+                removed = true;
+                break;
+            }
+        }
+    }
+    if (!removed) {
+        outMessage = "Error: Repository source '" + std::string(sourceId) + "' not found.";
+        return false;
+    }
+    saveSources();
+    outMessage = "Removed repository source: " + sName;
+    return true;
+}
+
+bool MicaManager::isSourceEnabled(PackageSource src) const {
+    std::lock_guard lock(mutex_);
+    for (const auto& s : sources_) {
+        if (!s.isEnabled) {
+            if (src == PackageSource::WinGet && s.id == "winget-pkgs") return false;
+            if (src == PackageSource::AospWsa && s.id == "aosp-foss") return false;
+            if (src == PackageSource::MicaNative && s.id == "micant-apps") return false;
+        }
+    }
     return true;
 }
 

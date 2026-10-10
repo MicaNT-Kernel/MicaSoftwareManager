@@ -359,15 +359,17 @@ void Catalog::addOrUpdatePackage(const PackageManifest& pkg) {
     packages_.push_back(pkg);
 }
 
-std::vector<PackageManifest> Catalog::search(std::string_view query) const {
+std::vector<PackageManifest> Catalog::search(std::string_view query, const std::function<bool(PackageSource)>& isSourceEnabled) const {
     std::lock_guard lock(mutex_);
-    if (query.empty()) return packages_;
-
     std::string lq = toLower(query);
     std::vector<PackageManifest> results;
 
     for (const auto& pkg : packages_) {
-        if (toLower(pkg.name).find(lq) != std::string::npos ||
+        if (isSourceEnabled && !isSourceEnabled(pkg.source)) {
+            continue;
+        }
+        if (query.empty() ||
+            toLower(pkg.name).find(lq) != std::string::npos ||
             toLower(pkg.id).find(lq) != std::string::npos ||
             toLower(pkg.vendor).find(lq) != std::string::npos ||
             toLower(pkg.description).find(lq) != std::string::npos) {
@@ -377,13 +379,16 @@ std::vector<PackageManifest> Catalog::search(std::string_view query) const {
     return results;
 }
 
-std::vector<PackageManifest> Catalog::filterByCategory(PackageCategory cat) const {
+std::vector<PackageManifest> Catalog::filterByCategory(PackageCategory cat, const std::function<bool(PackageSource)>& isSourceEnabled) const {
     std::lock_guard lock(mutex_);
-    if (cat == PackageCategory::All) return packages_;
-
     std::vector<PackageManifest> results;
     for (const auto& pkg : packages_) {
-        if (cat == PackageCategory::Updates) {
+        if (isSourceEnabled && !isSourceEnabled(pkg.source)) {
+            continue;
+        }
+        if (cat == PackageCategory::All) {
+            results.push_back(pkg);
+        } else if (cat == PackageCategory::Updates) {
             if (pkg.state == InstallState::UpdateAvailable) {
                 results.push_back(pkg);
             }

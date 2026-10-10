@@ -81,6 +81,28 @@ public:
     /// Imports and installs packages from an offline bundle pack.
     bool importBundle(const std::filesystem::path& bundleDir, std::string& outMessage);
 
+    /// --- Source Management ---
+    /// Returns the list of registered repository sources.
+    [[nodiscard]] std::vector<RepositorySource> getSources() const;
+
+    /// Adds a new repository source.
+    bool addSource(const RepositorySource& source, std::string& outMessage);
+
+    /// Enables or disables a repository source by ID.
+    bool setSourceEnabled(std::string_view sourceId, bool enabled, std::string& outMessage);
+
+    /// Removes a custom repository source by ID (default system sources cannot be deleted, but can be disabled).
+    bool removeSource(std::string_view sourceId, std::string& outMessage);
+
+    /// Checks if a package source type is currently enabled.
+    [[nodiscard]] bool isSourceEnabled(PackageSource src) const;
+
+    /// Persists sources to configuration file.
+    bool saveSources();
+
+    /// Loads sources from configuration file.
+    void loadSources();
+
     /// Configures dry-run / simulation mode (useful for testing and preflight checks)
     void setDryRun(bool dryRun) noexcept { dryRun_ = dryRun; }
     [[nodiscard]] bool isDryRun() const noexcept { return dryRun_; }
@@ -89,11 +111,12 @@ private:
     MicaManager();
     ~MicaManager();
 
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
     std::atomic<bool> isScanning_{false};
     std::thread scanThread_;
     Catalog catalog_;
     std::vector<InstalledAppInfo> installedApps_;
+    std::vector<RepositorySource> sources_;
     bool initialized_{false};
     bool dryRun_{false};
 };

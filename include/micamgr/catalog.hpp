@@ -8,6 +8,8 @@
 #include <optional>
 #include <mutex>
 
+#include <functional>
+
 namespace micamgr {
 
 class Catalog {
@@ -21,10 +23,10 @@ public:
     void addOrUpdatePackage(const PackageManifest& pkg);
 
     /// Searches packages matching query across name, vendor, description, or id.
-    [[nodiscard]] std::vector<PackageManifest> search(std::string_view query) const;
+    [[nodiscard]] std::vector<PackageManifest> search(std::string_view query, const std::function<bool(PackageSource)>& isSourceEnabled = nullptr) const;
 
     /// Filters packages by category.
-    [[nodiscard]] std::vector<PackageManifest> filterByCategory(PackageCategory cat) const;
+    [[nodiscard]] std::vector<PackageManifest> filterByCategory(PackageCategory cat, const std::function<bool(PackageSource)>& isSourceEnabled = nullptr) const;
 
     /// Filters packages by source.
     [[nodiscard]] std::vector<PackageManifest> filterBySource(PackageSource src) const;
@@ -54,7 +56,7 @@ public:
     [[nodiscard]] std::string exportToJson() const;
 
 private:
-    mutable std::mutex mutex_;
+    mutable std::recursive_mutex mutex_;
     std::vector<PackageManifest> packages_;
 };
 

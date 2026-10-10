@@ -48,6 +48,8 @@ std::vector<PackageManifest> UpdateEngine::checkForUpdates(Catalog& catalog, con
     std::unordered_map<std::string, std::string> exactNameMap;
 
     for (const auto& p : allPkgs) {
+        if (p.id.rfind("installed.", 0) == 0) continue; // Skip local discovered registry apps
+
         std::string lid = toLower(p.id);
         std::string lname = toLower(p.name);
         exactIdMap[lid] = p.id;

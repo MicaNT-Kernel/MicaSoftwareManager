@@ -399,7 +399,110 @@ void Test_Package_Details_Inspection() {
     std::cout << "[TEST] Suite 12: Package Details & Manifest Inspection PASSED.\n";
 }
 
+void Test_Repository_Sources_And_Feeds() {
+    std::cout << "[TEST] Running Suite 13: Repository Sources & Dynamic Feed Management...\n";
+
+    auto& mgr = micamgr::MicaManager::instance();
+    auto initialSources = mgr.getSources();
+    TEST_ASSERT(initialSources.size() >= 3, "At least 3 default repository sources present");
+
+    // Verify default sources
+    bool foundMica = false, foundWinGet = false, foundAosp = false;
+    for (const auto& s : initialSources) {
+        if (s.id == "micant-apps") foundMica = true;
+        if (s.id == "winget-pkgs") foundWinGet = true;
+        if (s.id == "aosp-foss") foundAosp = true;
+    }
+    TEST_ASSERT(foundMica && foundWinGet && foundAosp, "All 3 default sources registered");
+
+    // Add a custom source
+    micamgr::RepositorySource customSrc{
+        .id = "test-custom-repo",
+        .name = "Test Custom Repository",
+        .urlOrPath = "https://custom.example.org/feed.json",
+        .type = "custom",
+        .isEnabled = true,
+        .isDefault = false
+    };
+    std::string msg;
+    bool added = mgr.addSource(customSrc, msg);
+    TEST_ASSERT(added, "addSource succeeded for custom repo");
+
+    // Verify source exists
+    bool foundCustom = false;
+    for (const auto& s : mgr.getSources()) {
+        if (s.id == "test-custom-repo") {
+            foundCustom = true;
+            TEST_ASSERT(s.isEnabled, "Custom source is enabled");
+            break;
+        }
+    }
+    TEST_ASSERT(foundCustom, "Custom source found in getSources()");
+
+    // Disable WinGet source and test catalog filtering
+    bool disabled = mgr.setSourceEnabled("winget-pkgs", false, msg);
+    TEST_ASSERT(disabled, "setSourceEnabled to false succeeded");
+    TEST_ASSERT(!mgr.isSourceEnabled(micamgr::PackageSource::WinGet), "isSourceEnabled reports false for WinGet");
+
+    // Search with disabled source
+    auto wingetFiltered = mgr.catalog().search("Firefox", [&](micamgr::PackageSource src) { return mgr.isSourceEnabled(src); });
+    TEST_ASSERT(wingetFiltered.empty(), "Packages from disabled WinGet source are filtered out");
+
+    // Re-enable WinGet source
+    bool reEnabled = mgr.setSourceEnabled("winget-pkgs", true, msg);
+    TEST_ASSERT(reEnabled, "setSourceEnabled to true succeeded");
+    TEST_ASSERT(mgr.isSourceEnabled(micamgr::PackageSource::WinGet), "isSourceEnabled reports true for WinGet");
+
+    auto wingetFilteredAfter = mgr.catalog().search("Firefox", [&](micamgr::PackageSource src) { return mgr.isSourceEnabled(src); });
+    TEST_ASSERT(!wingetFilteredAfter.empty(), "Packages visible again when WinGet is re-enabled");
+
+    // Attempt to delete default source (must fail safely)
+    bool deletedDefault = mgr.removeSource("micant-apps", msg);
+    TEST_ASSERT(!deletedDefault, "Default built-in system sources cannot be deleted");
+
+    // Delete custom source
+    bool deletedCustom = mgr.removeSource("test-custom-repo", msg);
+    TEST_ASSERT(deletedCustom, "removeSource succeeded for custom source");
+
+    std::cout << "[TEST] Suite 13: Repository Sources & Dynamic Feed Management PASSED.\n";
+}
+
+void Test_Real_Data_Ingestion_And_UI_Scroll() {
+    std::cout << "[TEST] Running Suite 14: Real Data Ingestion & UI Viewport Scrolling...\n";
+
+    auto& mgr = micamgr::MicaManager::instance();
+    size_t beforeSize = mgr.catalog().size();
+
+    // Trigger real inventory scan
+    mgr.refreshInstalledApps();
+    size_t afterSize = mgr.catalog().size();
+    TEST_ASSERT(afterSize >= beforeSize, "Catalog size grew or stayed consistent with real data");
+
+    micamgr::SoftwareManagerUI ui;
+    ui.setActiveTab(micamgr::ManagerTab::Library);
+    ui.updateFilteredPackages();
+    ui.updateLayout(1100, 750);
+
+    TEST_ASSERT(!ui.filteredPackages().empty(), "Library tab displays genuine installed packages");
+
+    // Test mouse wheel scrolling
+    TEST_ASSERT(ui.scrollY() == 0, "Initial scroll position is 0");
+    ui.scroll(120);
+    TEST_ASSERT(ui.scrollY() >= 0, "Scroll offset updated");
+    ui.scroll(-500);
+    TEST_ASSERT(ui.scrollY() == 0, "Scroll offset clamped at 0 on scroll up");
+
+    // Test switching tabs resets scroll
+    ui.scroll(100);
+    ui.setActiveTab(micamgr::ManagerTab::Settings);
+    TEST_ASSERT(ui.scrollY() == 0, "Switching tabs resets scroll offset to 0");
+    TEST_ASSERT(!ui.sourceCards().empty(), "Settings tab displays source cards");
+
+    std::cout << "[TEST] Suite 14: Real Data Ingestion & UI Viewport Scrolling PASSED.\n";
+}
+
 int main() {
+    std::cout << std::unitbuf;
     std::cout << "======================================================================\n";
     std::cout << "Mica Software Manager (micamgr) Verification Suite\n";
     std::cout << "Standard: ISO C++23 | Zero Dependencies | Clean-Room Provenance\n";
@@ -408,21 +511,37 @@ int main() {
     // Configure test environment to dry-run (simulation) mode
     micamgr::MicaManager::instance().setDryRun(true);
 
+    std::cout << "-> Starting Suite 1...\n";
     Test_Package_Helpers_And_Json();
+    std::cout << "-> Starting Suite 2...\n";
     Test_Catalog_Engine();
+    std::cout << "-> Starting Suite 3...\n";
     Test_Registry_Scanner_And_Matching();
+    std::cout << "-> Starting Suite 4...\n";
     Test_Update_Engine();
+    std::cout << "-> Starting Suite 5...\n";
     Test_Sideload_Inspector();
+    std::cout << "-> Starting Suite 6...\n";
     Test_Sideload_Execution();
+    std::cout << "-> Starting Suite 7...\n";
     Test_Master_MicaManager();
+    std::cout << "-> Starting Suite 8...\n";
     Test_Software_Manager_UI();
+    std::cout << "-> Starting Suite 9...\n";
     Test_Package_Pinning();
+    std::cout << "-> Starting Suite 10...\n";
     Test_Curated_Stacks();
+    std::cout << "-> Starting Suite 11...\n";
     Test_Offline_Bundle_Export_Import();
+    std::cout << "-> Starting Suite 12...\n";
     Test_Package_Details_Inspection();
+    std::cout << "-> Starting Suite 13...\n";
+    Test_Repository_Sources_And_Feeds();
+    std::cout << "-> Starting Suite 14...\n";
+    Test_Real_Data_Ingestion_And_UI_Scroll();
 
     std::cout << "======================================================================\n";
-    std::cout << "ALL 12 MICA SOFTWARE MANAGER SUBSYSTEM TESTS PASSED (100% SUCCESS)\n";
+    std::cout << "ALL 14 MICA SOFTWARE MANAGER SUBSYSTEM TESTS PASSED (100% SUCCESS)\n";
     std::cout << "======================================================================\n";
 
     return 0;

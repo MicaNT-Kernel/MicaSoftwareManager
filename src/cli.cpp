@@ -27,6 +27,7 @@ void CliHandler::printUsage() {
     std::cout << "  unpin <package_id>      Unlock package to allow updates\n";
     std::cout << "  stack [list|install]    Manage and deploy curated sovereign software stacks\n";
     std::cout << "  bundle [export|import]  Export or import air-gapped offline installer bundles\n";
+    std::cout << "  source [list|add|enable|disable|remove] Manage package repository sources\n";
     std::cout << "  inspect <file_path>     Inspect an installer file (.exe, .msix, .apk, .zip)\n";
     std::cout << "  gui                     Launch the modern sovereign desktop interface\n";
     std::cout << "  version, -v             Print version information\n";
@@ -349,6 +350,87 @@ int CliHandler::run(int argc, char* argv[]) {
             std::cout << msg << "\n";
             return ok ? 0 : 1;
         }
+    }
+
+    if (cmd == "source") {
+        if (argc < 3 || std::string(argv[2]) == "list") {
+            auto sources = mgr.getSources();
+            std::cout << "\nPackage Repository Sources (" << sources.size() << "):\n";
+            std::cout << "------------------------------------------------------------------------------------\n";
+            std::cout << std::left << std::setw(18) << "Source ID"
+                      << std::setw(28) << "Name"
+                      << std::setw(10) << "Type"
+                      << std::setw(12) << "Status"
+                      << "URL / Location\n";
+            std::cout << "------------------------------------------------------------------------------------\n";
+            for (const auto& s : sources) {
+                std::string st = s.isEnabled ? "[ENABLED]" : "[DISABLED]";
+                std::cout << std::left << std::setw(18) << s.id
+                          << std::setw(28) << s.name
+                          << std::setw(10) << s.type
+                          << std::setw(12) << st
+                          << s.urlOrPath
+                          << (s.isDefault ? " (Default)" : "") << "\n";
+            }
+            std::cout << "\n";
+            return 0;
+        }
+
+        std::string sub = argv[2];
+        if (sub == "add") {
+            if (argc < 6) {
+                std::cerr << "Usage: micamgr source add <id> <name> <url_or_path> [type]\n";
+                return 1;
+            }
+            RepositorySource src;
+            src.id = argv[3];
+            src.name = argv[4];
+            src.urlOrPath = argv[5];
+            src.type = (argc > 6) ? argv[6] : "custom";
+            src.isEnabled = true;
+            src.isDefault = false;
+
+            std::string msg;
+            bool ok = mgr.addSource(src, msg);
+            std::cout << msg << "\n";
+            return ok ? 0 : 1;
+        }
+
+        if (sub == "enable") {
+            if (argc < 4) {
+                std::cerr << "Usage: micamgr source enable <id>\n";
+                return 1;
+            }
+            std::string msg;
+            bool ok = mgr.setSourceEnabled(argv[3], true, msg);
+            std::cout << msg << "\n";
+            return ok ? 0 : 1;
+        }
+
+        if (sub == "disable") {
+            if (argc < 4) {
+                std::cerr << "Usage: micamgr source disable <id>\n";
+                return 1;
+            }
+            std::string msg;
+            bool ok = mgr.setSourceEnabled(argv[3], false, msg);
+            std::cout << msg << "\n";
+            return ok ? 0 : 1;
+        }
+
+        if (sub == "remove" || sub == "delete" || sub == "rm") {
+            if (argc < 4) {
+                std::cerr << "Usage: micamgr source remove <id>\n";
+                return 1;
+            }
+            std::string msg;
+            bool ok = mgr.removeSource(argv[3], msg);
+            std::cout << msg << "\n";
+            return ok ? 0 : 1;
+        }
+
+        std::cerr << "Unknown source subcommand: " << sub << ". Use list, add, enable, disable, or remove.\n";
+        return 1;
     }
 
     if (cmd == "inspect") {

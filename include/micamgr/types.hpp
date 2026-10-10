@@ -116,6 +116,15 @@ struct CuratedStack {
     std::vector<std::string> packageIds;
 };
 
+struct RepositorySource {
+    std::string id;
+    std::string name;
+    std::string urlOrPath;
+    std::string type{"MicaNT.Native"};
+    bool isEnabled{true};
+    bool isDefault{false};
+};
+
 struct OfflineBundle {
     std::string name;
     std::string version{"1.0.0"};
