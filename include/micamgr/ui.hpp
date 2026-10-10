@@ -74,6 +74,16 @@ public:
 
     void setOnAddSource(std::function<void()> cb) { onAddSource_ = std::move(cb); }
 
+    /// Package Detail View Navigation
+    void selectPackage(std::string_view packageId);
+    void closeDetailView() noexcept;
+    [[nodiscard]] bool isInDetailView() const noexcept { return !selectedPackageId_.empty(); }
+    [[nodiscard]] const std::string& selectedPackageId() const noexcept { return selectedPackageId_; }
+    [[nodiscard]] UiRect backBtnBounds() const noexcept { return backBtnBounds_; }
+    [[nodiscard]] UiRect detailActionBtnBounds() const noexcept { return detailActionBtnBounds_; }
+    [[nodiscard]] UiRect detailPinBtnBounds() const noexcept { return detailPinBtnBounds_; }
+    [[nodiscard]] const std::vector<std::pair<UiRect, std::string>>& cardClickBounds() const noexcept { return cardClickBounds_; }
+
     [[nodiscard]] const std::vector<PackageManifest>& filteredPackages() const noexcept { return filteredPackages_; }
     [[nodiscard]] const std::vector<PackageManifest>& pendingUpdates() const noexcept { return pendingUpdates_; }
 
@@ -96,6 +106,7 @@ private:
     ManagerTab activeTab_{ManagerTab::Browse};
     PackageCategory activeCategory_{PackageCategory::All};
     std::string searchQuery_;
+    std::string selectedPackageId_;
     std::string statusMessage_{"Ready"};
     std::filesystem::path inspectedFile_;
     SideloadInspectResult inspectResult_;
@@ -116,7 +127,11 @@ private:
     UiRect searchBarBounds_;
     UiRect updateAllBtnBounds_;
     UiRect addSourceBtnBounds_;
+    UiRect backBtnBounds_;
+    UiRect detailActionBtnBounds_;
+    UiRect detailPinBtnBounds_;
     std::vector<std::pair<UiRect, std::string>> cardActionBounds_;
+    std::vector<std::pair<UiRect, std::string>> cardClickBounds_;
     std::vector<SourceCardUi> sourceActionBounds_;
 };
 

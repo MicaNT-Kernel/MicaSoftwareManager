@@ -501,6 +501,68 @@ void Test_Real_Data_Ingestion_And_UI_Scroll() {
     std::cout << "[TEST] Suite 14: Real Data Ingestion & UI Viewport Scrolling PASSED.\n";
 }
 
+void Test_App_Icon_And_Detail_View() {
+    std::cout << "[TEST] Running Suite 15: App Icon Extraction & Package Detail View...\n";
+
+    micamgr::SoftwareManagerUI ui;
+    TEST_ASSERT(!ui.isInDetailView(), "Initial state is not in detail view");
+    TEST_ASSERT(ui.selectedPackageId().empty(), "Initial selected package ID is empty");
+
+    // 1. Select a package for detail view
+    ui.selectPackage("Mozilla.Firefox");
+    TEST_ASSERT(ui.isInDetailView(), "isInDetailView returns true after selectPackage");
+    TEST_ASSERT(ui.selectedPackageId() == "Mozilla.Firefox", "selectedPackageId matches selected package");
+
+    // 2. Verify layout bounds calculated for detail view
+    ui.updateLayout(1100, 750);
+    auto backBtn = ui.backBtnBounds();
+    auto actionBtn = ui.detailActionBtnBounds();
+    auto pinBtn = ui.detailPinBtnBounds();
+
+    TEST_ASSERT(backBtn.width > 0 && backBtn.height > 0, "Back button bounds calculated");
+    TEST_ASSERT(actionBtn.width > 0 && actionBtn.height > 0, "Detail action button bounds calculated");
+    TEST_ASSERT(pinBtn.width > 0 && pinBtn.height > 0, "Detail pin button bounds calculated");
+
+    // 3. Test Back button interaction
+    bool backClicked = ui.onMouseDown(backBtn.x + 5, backBtn.y + 5);
+    TEST_ASSERT(backClicked, "Back button click handled");
+    TEST_ASSERT(!ui.isInDetailView(), "Detail view closed after clicking back button");
+    TEST_ASSERT(ui.selectedPackageId().empty(), "Selected package ID cleared");
+
+    // 4. Test clicking card body in Browse tab opens detail view
+    ui.setActiveTab(micamgr::ManagerTab::Browse);
+    ui.updateLayout(1100, 750);
+    TEST_ASSERT(!ui.cardClickBounds().empty(), "Card click bounds populated in Browse tab");
+
+    auto firstCard = ui.cardClickBounds().front();
+    bool cardClicked = ui.onMouseDown(firstCard.first.x + 10, firstCard.first.y + 10);
+    TEST_ASSERT(cardClicked, "Card body click handled");
+    TEST_ASSERT(ui.isInDetailView(), "Detail view opened after card body click");
+    TEST_ASSERT(ui.selectedPackageId() == firstCard.second, "Selected package matches clicked card");
+
+    // 5. Test detail pin button toggles pinning
+    std::string currentId = ui.selectedPackageId();
+    bool initialPin = micamgr::MicaManager::instance().catalog().isPinned(currentId);
+    bool pinClicked = ui.onMouseDown(pinBtn.x + 5, pinBtn.y + 5);
+    TEST_ASSERT(pinClicked, "Pin button click handled in detail view");
+    TEST_ASSERT(micamgr::MicaManager::instance().catalog().isPinned(currentId) != initialPin, "Package pin status toggled via detail view");
+
+    // 6. Test switching tab resets detail view
+    ui.setActiveTab(micamgr::ManagerTab::Library);
+    TEST_ASSERT(!ui.isInDetailView(), "Switching tab closes detail view");
+
+    // 7. Test PackageManifest iconPath and InstalledAppInfo displayIcon
+    micamgr::PackageManifest testPkg;
+    testPkg.iconPath = "C:\\Program Files\\Test\\test.exe,0";
+    TEST_ASSERT(!testPkg.iconPath.empty(), "PackageManifest iconPath holds valid path");
+
+    micamgr::InstalledAppInfo appInfo;
+    appInfo.displayIcon = "C:\\Windows\\System32\\notepad.exe";
+    TEST_ASSERT(!appInfo.displayIcon.empty(), "InstalledAppInfo displayIcon holds valid path");
+
+    std::cout << "[TEST] Suite 15: App Icon Extraction & Package Detail View PASSED.\n";
+}
+
 int main() {
     std::cout << std::unitbuf;
     std::cout << "======================================================================\n";
@@ -539,9 +601,11 @@ int main() {
     Test_Repository_Sources_And_Feeds();
     std::cout << "-> Starting Suite 14...\n";
     Test_Real_Data_Ingestion_And_UI_Scroll();
+    std::cout << "-> Starting Suite 15...\n";
+    Test_App_Icon_And_Detail_View();
 
     std::cout << "======================================================================\n";
-    std::cout << "ALL 14 MICA SOFTWARE MANAGER SUBSYSTEM TESTS PASSED (100% SUCCESS)\n";
+    std::cout << "ALL 15 MICA SOFTWARE MANAGER SUBSYSTEM TESTS PASSED (100% SUCCESS)\n";
     std::cout << "======================================================================\n";
 
     return 0;

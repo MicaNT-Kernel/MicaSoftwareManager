@@ -142,8 +142,14 @@ void MicaManager::refreshInstalledApps() {
         if (pkgId.empty()) {
             pkgId = "installed." + sanitizePackageId(app.displayName);
         }
-        // If not already in catalog, register as real installed app
-        if (!catalog_.findById(pkgId)) {
+        std::string icon = !app.displayIcon.empty() ? app.displayIcon : (!app.installLocation.empty() ? app.installLocation : app.uninstallString);
+        auto existing = catalog_.findById(pkgId);
+        if (existing) {
+            if (existing->iconPath.empty() && !icon.empty()) {
+                existing->iconPath = icon;
+                catalog_.addOrUpdatePackage(*existing);
+            }
+        } else {
             PackageManifest p;
             p.id = std::move(pkgId);
             p.name = app.displayName;
@@ -159,6 +165,7 @@ void MicaManager::refreshInstalledApps() {
                             (app.installLocation.empty() ? "" : (" | Location: " + app.installLocation));
             p.state = InstallState::Installed;
             p.iconId = "Package";
+            p.iconPath = std::move(icon);
             catalog_.addOrUpdatePackage(p);
         }
     }

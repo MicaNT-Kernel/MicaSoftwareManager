@@ -14,6 +14,7 @@ struct InstalledAppInfo {
     std::string installLocation;
     std::string uninstallString;
     std::string quietUninstallString;
+    std::string displayIcon;
     uint64_t estimatedSizeBytes{0};
     bool isSystemComponent{false};
     std::string matchedPackageId;

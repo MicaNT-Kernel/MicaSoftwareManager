@@ -128,6 +128,7 @@ static void scanRegistryKey(HKEY root, const wchar_t* subKeyPath, REGSAM viewSam
             info.installLocation = readRegString(hAppKey, L"InstallLocation");
             info.uninstallString = readRegString(hAppKey, L"UninstallString");
             info.quietUninstallString = readRegString(hAppKey, L"QuietUninstallString");
+            info.displayIcon = readRegString(hAppKey, L"DisplayIcon");
             info.estimatedSizeBytes = static_cast<uint64_t>(readRegDword(hAppKey, L"EstimatedSize")) * 1024ULL;
             info.isSystemComponent = false;
 
@@ -165,6 +166,7 @@ std::vector<InstalledAppInfo> RegistryScanner::scanInstalledApps() {
             .installLocation = "C:\\Program Files\\SurShell",
             .uninstallString = "C:\\Program Files\\SurShell\\uninstall.exe",
             .quietUninstallString = "C:\\Program Files\\SurShell\\uninstall.exe /S",
+            .displayIcon = "C:\\Program Files\\SurShell\\surshell.exe",
             .estimatedSizeBytes = 45 * 1024 * 1024,
             .isSystemComponent = false,
             .matchedPackageId = "com.barrer.surshell"
@@ -176,6 +178,7 @@ std::vector<InstalledAppInfo> RegistryScanner::scanInstalledApps() {
             .installLocation = "C:\\Program Files\\Mozilla Firefox",
             .uninstallString = "C:\\Program Files\\Mozilla Firefox\\uninstall\\helper.exe",
             .quietUninstallString = "C:\\Program Files\\Mozilla Firefox\\uninstall\\helper.exe -ms",
+            .displayIcon = "C:\\Program Files\\Mozilla Firefox\\firefox.exe,0",
             .estimatedSizeBytes = 120 * 1024 * 1024,
             .isSystemComponent = false,
             .matchedPackageId = "Mozilla.Firefox"
@@ -187,6 +190,7 @@ std::vector<InstalledAppInfo> RegistryScanner::scanInstalledApps() {
             .installLocation = "C:\\Users\\admin\\AppData\\Local\\Programs\\Microsoft VS Code",
             .uninstallString = "C:\\Users\\admin\\AppData\\Local\\Programs\\Microsoft VS Code\\unins000.exe",
             .quietUninstallString = "C:\\Users\\admin\\AppData\\Local\\Programs\\Microsoft VS Code\\unins000.exe /VERYSILENT",
+            .displayIcon = "C:\\Users\\admin\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe,0",
             .estimatedSizeBytes = 340 * 1024 * 1024,
             .isSystemComponent = false,
             .matchedPackageId = "Microsoft.VisualStudioCode"

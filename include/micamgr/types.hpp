@@ -60,6 +60,7 @@ struct PackageManifest {
     std::string description;
     std::string iconGlyph{"[PKG]"};
     std::string iconId{"Package"};
+    std::string iconPath;
     InstallState state{InstallState::NotInstalled};
     std::string uninstallString;
     uint64_t installSizeBytes{0};

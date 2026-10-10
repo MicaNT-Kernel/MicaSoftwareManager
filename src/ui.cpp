@@ -19,6 +19,7 @@ SoftwareManagerUI::SoftwareManagerUI() {
 
 void SoftwareManagerUI::setActiveTab(ManagerTab tab) noexcept {
     activeTab_ = tab;
+    selectedPackageId_.clear();
     scrollY_ = 0;
     updateFilteredPackages();
     updateLayout(winWidth_, winHeight_);
@@ -26,6 +27,7 @@ void SoftwareManagerUI::setActiveTab(ManagerTab tab) noexcept {
 
 void SoftwareManagerUI::setCategory(PackageCategory cat) noexcept {
     activeCategory_ = cat;
+    selectedPackageId_.clear();
     scrollY_ = 0;
     updateFilteredPackages();
     updateLayout(winWidth_, winHeight_);
@@ -33,8 +35,21 @@ void SoftwareManagerUI::setCategory(PackageCategory cat) noexcept {
 
 void SoftwareManagerUI::setSearchQuery(std::string_view query) {
     searchQuery_ = query;
+    selectedPackageId_.clear();
     scrollY_ = 0;
     updateFilteredPackages();
+    updateLayout(winWidth_, winHeight_);
+}
+
+void SoftwareManagerUI::selectPackage(std::string_view packageId) {
+    selectedPackageId_ = packageId;
+    scrollY_ = 0;
+    updateLayout(winWidth_, winHeight_);
+}
+
+void SoftwareManagerUI::closeDetailView() noexcept {
+    selectedPackageId_.clear();
+    scrollY_ = 0;
     updateLayout(winWidth_, winHeight_);
 }
 
@@ -131,7 +146,23 @@ void SoftwareManagerUI::updateLayout(int width, int height) {
     addSourceBtnBounds_ = UiRect{ width - 180, 100, 150, 32 };
 
     cardActionBounds_.clear();
+    cardClickBounds_.clear();
     sourceActionBounds_.clear();
+
+    if (isInDetailView()) {
+        backBtnBounds_ = UiRect{ 24, 100, 85, 30 };
+        detailActionBtnBounds_ = UiRect{ 102, 205, 110, 34 };
+        detailPinBtnBounds_ = UiRect{ 222, 205, 150, 34 };
+
+        int totalH = 650;
+        maxScrollY_ = (totalH > height) ? (totalH - height) : 0;
+        if (scrollY_ > maxScrollY_) scrollY_ = maxScrollY_;
+        return;
+    }
+
+    backBtnBounds_ = UiRect{};
+    detailActionBtnBounds_ = UiRect{};
+    detailPinBtnBounds_ = UiRect{};
 
     if (activeTab_ == ManagerTab::Browse || activeTab_ == ManagerTab::Library) {
         int cardY = 145;
@@ -143,8 +174,11 @@ void SoftwareManagerUI::updateLayout(int width, int height) {
         for (size_t i = 0; i < filteredPackages_.size(); ++i) {
             int cy = cardY + static_cast<int>(i) * (cardH + 10) - scrollY_;
             if (cy + cardH >= 90 && cy <= height - 30) {
-                UiRect actionBtn{ width - 150, cy + 22, 100, 32 };
+                UiRect actionBtn{ width - 150, cy + 20, 110, 34 };
                 cardActionBounds_.push_back({ actionBtn, filteredPackages_[i].id });
+
+                UiRect cardRect{ 24, cy, width - 48, cardH };
+                cardClickBounds_.push_back({ cardRect, filteredPackages_[i].id });
             }
         }
     } else if (activeTab_ == ManagerTab::Settings) {
@@ -197,6 +231,38 @@ bool SoftwareManagerUI::onMouseDown(int x, int y) {
         scrollY_ = 0;
         setActiveTab(ManagerTab::Settings);
         return true;
+    }
+
+    if (isInDetailView()) {
+        if (backBtnBounds_.contains(x, y)) {
+            closeDetailView();
+            return true;
+        }
+        if (detailActionBtnBounds_.contains(x, y)) {
+            auto optPkg = MicaManager::instance().getPackageDetails(selectedPackageId_);
+            if (optPkg) {
+                std::string log;
+                if (optPkg->state == InstallState::Installed) {
+                    MicaManager::instance().uninstallPackage(selectedPackageId_, log);
+                    statusMessage_ = "Uninstalled " + selectedPackageId_;
+                } else {
+                    MicaManager::instance().installPackage(selectedPackageId_, log);
+                    statusMessage_ = "Installed " + selectedPackageId_;
+                }
+                updateFilteredPackages();
+                updateLayout(winWidth_, winHeight_);
+            }
+            return true;
+        }
+        if (detailPinBtnBounds_.contains(x, y)) {
+            bool currentlyPinned = MicaManager::instance().catalog().isPinned(selectedPackageId_);
+            MicaManager::instance().pinPackage(selectedPackageId_, !currentlyPinned);
+            statusMessage_ = (!currentlyPinned ? "Pinned version: " : "Unpinned: ") + selectedPackageId_;
+            updateFilteredPackages();
+            updateLayout(winWidth_, winHeight_);
+            return true;
+        }
+        return false;
     }
 
     if (activeTab_ == ManagerTab::Library && updateAllBtnBounds_.contains(x, y)) {
@@ -260,6 +326,13 @@ bool SoftwareManagerUI::onMouseDown(int x, int y) {
         }
     }
 
+    for (const auto& [cardRect, pkgId] : cardClickBounds_) {
+        if (cardRect.contains(x, y)) {
+            selectPackage(pkgId);
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -268,6 +341,140 @@ void SoftwareManagerUI::onSearchInput(std::string_view text) {
 }
 
 #ifdef _WIN32
+#include <shellapi.h>
+#include <unordered_map>
+
+struct CachedIcons {
+    HICON smallIcon{nullptr};
+    HICON largeIcon{nullptr};
+    bool attempted{false};
+};
+
+static std::unordered_map<std::string, CachedIcons> g_iconCache;
+
+static std::pair<std::wstring, int> parseIconPath(std::string_view rawPath) {
+    if (rawPath.empty()) return {{}, 0};
+
+    std::string s(rawPath);
+    s.erase(0, s.find_first_not_of(" \t\r\n\""));
+    
+    int iconIndex = 0;
+    size_t comma = s.find_last_of(',');
+    if (comma != std::string::npos && comma > 0) {
+        std::string idxStr = s.substr(comma + 1);
+        idxStr.erase(0, idxStr.find_first_not_of(" \t\r\n\""));
+        auto last = idxStr.find_last_not_of(" \t\r\n\"");
+        if (last != std::string::npos) idxStr.erase(last + 1);
+        try {
+            iconIndex = std::stoi(idxStr);
+            s = s.substr(0, comma);
+        } catch (...) {}
+    }
+
+    auto quoteEnd = s.find_last_not_of(" \t\r\n\"");
+    if (quoteEnd != std::string::npos) s.erase(quoteEnd + 1);
+    if (!s.empty() && s.front() == '"') s.erase(0, 1);
+    if (!s.empty() && s.back() == '"') s.pop_back();
+
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (wlen <= 0) return {{}, 0};
+
+    std::wstring wpath(wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), wpath.data(), wlen);
+    return {wpath, iconIndex};
+}
+
+static CachedIcons getOrLoadAppIcons(const PackageManifest& pkg) {
+    std::string key = pkg.id;
+    auto it = g_iconCache.find(key);
+    if (it != g_iconCache.end()) {
+        return it->second;
+    }
+
+    CachedIcons icons;
+    icons.attempted = true;
+
+    std::string pathToTry = pkg.iconPath;
+    if (pathToTry.empty() && !pkg.uninstallString.empty()) {
+        pathToTry = pkg.uninstallString;
+    }
+
+    if (!pathToTry.empty()) {
+        auto [wpath, iconIdx] = parseIconPath(pathToTry);
+        if (!wpath.empty()) {
+            HICON hLarge = nullptr;
+            HICON hSmall = nullptr;
+            UINT extracted = ExtractIconExW(wpath.c_str(), iconIdx, &hLarge, &hSmall, 1);
+            if (extracted > 0 && (hLarge || hSmall)) {
+                icons.largeIcon = hLarge;
+                icons.smallIcon = hSmall ? hSmall : hLarge;
+            } else {
+                SHFILEINFOW sfiLarge{};
+                if (SHGetFileInfoW(wpath.c_str(), 0, &sfiLarge, sizeof(sfiLarge), SHGFI_ICON | SHGFI_LARGEICON) && sfiLarge.hIcon) {
+                    icons.largeIcon = sfiLarge.hIcon;
+                }
+                SHFILEINFOW sfiSmall{};
+                if (SHGetFileInfoW(wpath.c_str(), 0, &sfiSmall, sizeof(sfiSmall), SHGFI_ICON | SHGFI_SMALLICON) && sfiSmall.hIcon) {
+                    icons.smallIcon = sfiSmall.hIcon;
+                }
+            }
+        }
+    }
+
+    g_iconCache[key] = icons;
+    return icons;
+}
+
+static void drawPackageIcon(HDC hdc, const PackageManifest& pkg, int x, int y, int size) {
+    auto icons = getOrLoadAppIcons(pkg);
+    HICON hIcon = (size >= 48) ? (icons.largeIcon ? icons.largeIcon : icons.smallIcon) : (icons.smallIcon ? icons.smallIcon : icons.largeIcon);
+
+    if (hIcon) {
+        DrawIconEx(hdc, x, y, hIcon, size, size, 0, nullptr, DI_NORMAL);
+    } else {
+        COLORREF tileColor = RGB(30, 50, 85);
+        if (pkg.source == PackageSource::WinGet) {
+            tileColor = RGB(15, 75, 90);
+        } else if (pkg.source == PackageSource::AospWsa) {
+            tileColor = RGB(25, 80, 45);
+        } else if (pkg.source == PackageSource::MicaNative) {
+            tileColor = RGB(35, 60, 110);
+        }
+
+        HBRUSH tileBrush = CreateSolidBrush(tileColor);
+        HPEN tilePen = CreatePen(PS_SOLID, 1, RGB(55, 80, 120));
+        HGDIOBJ oldBrush = SelectObject(hdc, tileBrush);
+        HGDIOBJ oldPen = SelectObject(hdc, tilePen);
+
+        RoundRect(hdc, x, y, x + size, y + size, 10, 10);
+
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(tileBrush);
+        DeleteObject(tilePen);
+
+        std::wstring initials;
+        for (char c : pkg.name) {
+            if (std::isalnum(static_cast<unsigned char>(c))) {
+                if (initials.empty() || (initials.size() == 1 && std::isupper(static_cast<unsigned char>(c)))) {
+                    initials.push_back(static_cast<wchar_t>(std::toupper(static_cast<unsigned char>(c))));
+                }
+            }
+            if (initials.size() >= 2) break;
+        }
+        if (initials.empty()) initials = L"P";
+
+        RECT tr{ x, y, x + size, y + size };
+        SetTextColor(hdc, RGB(240, 245, 255));
+        SetBkMode(hdc, TRANSPARENT);
+        HFONT badgeFont = CreateFontW(size / 2, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+        HGDIOBJ oldFont = SelectObject(hdc, badgeFont);
+        DrawTextW(hdc, initials.c_str(), -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, oldFont);
+        DeleteObject(badgeFont);
+    }
+}
+
 static SoftwareManagerUI* g_ui = nullptr;
 static HFONT g_titleFont = nullptr;
 static HFONT g_subFont = nullptr;
@@ -294,6 +501,18 @@ static void freeGdiResources() {
     if (g_subFont) { DeleteObject(g_subFont); g_subFont = nullptr; }
     if (g_cardTitleFont) { DeleteObject(g_cardTitleFont); g_cardTitleFont = nullptr; }
     if (g_linePen) { DeleteObject(g_linePen); g_linePen = nullptr; }
+
+    for (auto& [key, icons] : g_iconCache) {
+        if (icons.smallIcon) {
+            DestroyIcon(icons.smallIcon);
+            icons.smallIcon = nullptr;
+        }
+        if (icons.largeIcon && icons.largeIcon != icons.smallIcon) {
+            DestroyIcon(icons.largeIcon);
+            icons.largeIcon = nullptr;
+        }
+    }
+    g_iconCache.clear();
 }
 
 static HWND g_hAddDlg = nullptr;
@@ -463,6 +682,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         case WM_KEYDOWN: {
             if (g_ui) {
+                if (wParam == VK_ESCAPE || wParam == VK_BACK) {
+                    if (g_ui->isInDetailView()) {
+                        g_ui->closeDetailView();
+                        RECT rc;
+                        GetClientRect(hWnd, &rc);
+                        g_ui->updateLayout(rc.right - rc.left, rc.bottom - rc.top);
+                        InvalidateRect(hWnd, nullptr, FALSE);
+                        return 0;
+                    }
+                }
                 int step = 0;
                 if (wParam == VK_UP) step = -40;
                 else if (wParam == VK_DOWN) step = 40;
@@ -557,91 +786,214 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             // Content Area
             if (g_ui->activeTab() == ManagerTab::Browse || g_ui->activeTab() == ManagerTab::Library) {
-                int startY = 105;
-                if (g_ui->activeTab() == ManagerTab::Library) {
-                    SetTextColor(memDC, RGB(220, 230, 245));
-                    std::string libHeader = "Installed Software & Pending Updates (" + std::to_string(g_ui->filteredPackages().size()) + " items)";
-                    std::wstring wLibHeader(libHeader.begin(), libHeader.end());
-                    TextOutW(memDC, 24, startY, wLibHeader.c_str(), static_cast<int>(wLibHeader.size()));
+                if (g_ui->isInDetailView()) {
+                    auto optPkg = MicaManager::instance().getPackageDetails(g_ui->selectedPackageId());
+                    if (optPkg) {
+                        const auto& pkg = *optPkg;
 
-                    // Update All Button
-                    RECT ur{ g_ui->updateAllBtnBounds().x, g_ui->updateAllBtnBounds().y, g_ui->updateAllBtnBounds().x + g_ui->updateAllBtnBounds().width, g_ui->updateAllBtnBounds().y + g_ui->updateAllBtnBounds().height };
-                    HBRUSH uBrush = CreateSolidBrush(RGB(35, 120, 230));
-                    FillRect(memDC, &ur, uBrush);
-                    DeleteObject(uBrush);
-                    SetTextColor(memDC, RGB(255, 255, 255));
-                    DrawTextW(memDC, L"Update All", -1, &ur, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                } else {
-                    SetTextColor(memDC, RGB(220, 230, 245));
-                    std::string browseHeader = "Browse Catalog (" + std::to_string(g_ui->filteredPackages().size()) + " packages available)";
-                    std::wstring wBrowseHeader(browseHeader.begin(), browseHeader.end());
-                    TextOutW(memDC, 24, startY, wBrowseHeader.c_str(), static_cast<int>(wBrowseHeader.size()));
-                }
+                        // 1. Back button [ < Back ]
+                        RECT bkR{ g_ui->backBtnBounds().x, g_ui->backBtnBounds().y, g_ui->backBtnBounds().x + g_ui->backBtnBounds().width, g_ui->backBtnBounds().y + g_ui->backBtnBounds().height };
+                        HBRUSH bkBrush = CreateSolidBrush(RGB(28, 38, 56));
+                        FillRect(memDC, &bkR, bkBrush);
+                        DeleteObject(bkBrush);
+                        SetTextColor(memDC, RGB(200, 220, 255));
+                        SelectObject(memDC, g_subFont);
+                        DrawTextW(memDC, L"< Back", -1, &bkR, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-                // Clip rendering to card viewport (between y=140 and y=height-32)
-                HRGN clipRgn = CreateRectRgn(0, 140, width, height - 32);
-                SelectClipRgn(memDC, clipRgn);
+                        // 2. Large 64x64 App Icon
+                        drawPackageIcon(memDC, pkg, 24, 142, 64);
 
-                int cardY = 145;
-                int cardH = 75;
-                const auto& pkgs = g_ui->filteredPackages();
-                for (size_t i = 0; i < pkgs.size(); ++i) {
-                    const auto& pkg = pkgs[i];
-                    int cy = cardY + static_cast<int>(i) * (cardH + 10) - g_ui->scrollY();
-                    if (cy + cardH < 140 || cy > height - 32) continue;
+                        // 3. Package Title & Vendor
+                        SelectObject(memDC, g_titleFont);
+                        SetTextColor(memDC, RGB(245, 248, 255));
+                        std::wstring wpName(pkg.name.begin(), pkg.name.end());
+                        TextOutW(memDC, 102, 142, wpName.c_str(), static_cast<int>(wpName.size()));
 
-                    RECT cr{ 24, cy, width - 24, cy + cardH };
-                    HBRUSH cBrush = CreateSolidBrush(RGB(17, 24, 38));
-                    FillRect(memDC, &cr, cBrush);
-                    DeleteObject(cBrush);
+                        SelectObject(memDC, g_subFont);
+                        SetTextColor(memDC, RGB(130, 150, 185));
+                        std::string subLine = pkg.vendor + " | " + pkg.sourceToString() + " | Architecture: " + pkg.architecture;
+                        std::wstring wSubLine(subLine.begin(), subLine.end());
+                        TextOutW(memDC, 102, 172, wSubLine.c_str(), static_cast<int>(wSubLine.size()));
 
-                    // Package title (using cached font)
-                    SelectObject(memDC, g_cardTitleFont);
-                    SetTextColor(memDC, RGB(240, 245, 255));
-
-                    std::wstring wname(pkg.name.begin(), pkg.name.end());
-                    TextOutW(memDC, 36, cy + 12, wname.c_str(), static_cast<int>(wname.size()));
-
-                    SelectObject(memDC, g_subFont);
-                    SetTextColor(memDC, RGB(130, 150, 180));
-                    std::string desc = pkg.vendor + " | v" + (pkg.installedVersion.empty() ? pkg.version : pkg.installedVersion) + " | " + pkg.sourceToString() + " (" + pkg.architecture + ")";
-                    if (pkg.state == InstallState::UpdateAvailable) {
-                        desc += " -> New v" + pkg.version + " available";
-                    }
-                    std::wstring wdesc(desc.begin(), desc.end());
-                    TextOutW(memDC, 36, cy + 38, wdesc.c_str(), static_cast<int>(wdesc.size()));
-
-                    // Action button
-                    RECT br{ width - 150, cy + 20, width - 40, cy + 54 };
-                    bool isUp = (pkg.state == InstallState::UpdateAvailable);
-                    bool isInst = (pkg.state == InstallState::Installed);
-
-                    HBRUSH bBrush = nullptr;
-                    const wchar_t* btnText = L"Get";
-                    if (isUp) {
-                        bBrush = CreateSolidBrush(RGB(210, 140, 20)); // Orange
-                        btnText = L"Update";
-                    } else if (isInst) {
-                        if (g_ui->activeTab() == ManagerTab::Library) {
-                            bBrush = CreateSolidBrush(RGB(110, 40, 40)); // Reddish
-                            btnText = L"Uninstall";
+                        // 4. Action Buttons
+                        // Primary Action Button (Install / Update / Uninstall)
+                        RECT ar{ g_ui->detailActionBtnBounds().x, g_ui->detailActionBtnBounds().y, g_ui->detailActionBtnBounds().x + g_ui->detailActionBtnBounds().width, g_ui->detailActionBtnBounds().y + g_ui->detailActionBtnBounds().height };
+                        HBRUSH aBrush = nullptr;
+                        const wchar_t* aText = L"Install";
+                        if (pkg.state == InstallState::UpdateAvailable) {
+                            aBrush = CreateSolidBrush(RGB(210, 140, 20));
+                            aText = L"Update";
+                        } else if (pkg.state == InstallState::Installed) {
+                            aBrush = CreateSolidBrush(RGB(140, 40, 40));
+                            aText = L"Uninstall";
                         } else {
-                            bBrush = CreateSolidBrush(RGB(30, 75, 50)); // Green
-                            btnText = L"Installed";
+                            aBrush = CreateSolidBrush(RGB(25, 105, 200));
+                            aText = L"Install";
                         }
-                    } else {
-                        bBrush = CreateSolidBrush(RGB(25, 95, 180)); // Blue
-                        btnText = L"Get";
+                        FillRect(memDC, &ar, aBrush);
+                        DeleteObject(aBrush);
+                        SetTextColor(memDC, RGB(255, 255, 255));
+                        DrawTextW(memDC, aText, -1, &ar, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                        // Pin Button
+                        RECT pr{ g_ui->detailPinBtnBounds().x, g_ui->detailPinBtnBounds().y, g_ui->detailPinBtnBounds().x + g_ui->detailPinBtnBounds().width, g_ui->detailPinBtnBounds().y + g_ui->detailPinBtnBounds().height };
+                        bool isPinned = MicaManager::instance().catalog().isPinned(pkg.id);
+                        HBRUSH pBrush = CreateSolidBrush(isPinned ? RGB(115, 65, 20) : RGB(35, 48, 70));
+                        FillRect(memDC, &pr, pBrush);
+                        DeleteObject(pBrush);
+                        SetTextColor(memDC, isPinned ? RGB(255, 215, 140) : RGB(200, 215, 240));
+                        DrawTextW(memDC, isPinned ? L"Pinned (Locked)" : L"Pin / Lock Version", -1, &pr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                        // 5. Specifications & Provenance Card
+                        RECT specCard{ 24, 250, width - 24, 430 };
+                        HBRUSH specBrush = CreateSolidBrush(RGB(17, 24, 38));
+                        FillRect(memDC, &specCard, specBrush);
+                        DeleteObject(specBrush);
+
+                        SelectObject(memDC, g_cardTitleFont);
+                        SetTextColor(memDC, RGB(230, 240, 255));
+                        TextOutW(memDC, 36, 260, L"Package Specifications & Provenance", 35);
+
+                        SelectObject(memDC, g_subFont);
+                        SetTextColor(memDC, RGB(130, 150, 185));
+
+                        auto drawSpecLine = [&](int x, int y, const wchar_t* label, const std::string& val) {
+                            TextOutW(memDC, x, y, label, static_cast<int>(wcslen(label)));
+                            SetTextColor(memDC, RGB(215, 225, 245));
+                            std::wstring wval(val.begin(), val.end());
+                            TextOutW(memDC, x + 130, y, wval.c_str(), static_cast<int>(wval.size()));
+                            SetTextColor(memDC, RGB(130, 150, 185));
+                        };
+
+                        int col1X = 36;
+                        int col2X = (width / 2) + 10;
+                        drawSpecLine(col1X, 290, L"Package ID:", pkg.id);
+                        drawSpecLine(col1X, 315, L"Source:", pkg.sourceToString());
+                        drawSpecLine(col1X, 340, L"Architecture:", pkg.architecture);
+                        drawSpecLine(col1X, 365, L"License:", pkg.license);
+                        drawSpecLine(col1X, 390, L"Category:", pkg.categoryToString());
+
+                        drawSpecLine(col2X, 290, L"Current Ver:", pkg.installedVersion.empty() ? "(Not installed)" : pkg.installedVersion);
+                        drawSpecLine(col2X, 315, L"Latest Ver:", pkg.version);
+                        drawSpecLine(col2X, 340, L"SHA-256:", pkg.sha256.empty() ? "MicaTPM Root Attested" : (pkg.sha256.substr(0, 24) + "..."));
+                        drawSpecLine(col2X, 365, L"Pinned State:", isPinned ? "Yes (Protected)" : "No (Auto-upgradeable)");
+                        drawSpecLine(col2X, 390, L"Install Size:", (pkg.installSizeBytes > 0 ? (std::to_string(pkg.installSizeBytes / (1024 * 1024)) + " MB") : "Standard"));
+
+                        // 6. Description & Location Card
+                        RECT descCard{ 24, 445, width - 24, 615 };
+                        HBRUSH descBrush = CreateSolidBrush(RGB(17, 24, 38));
+                        FillRect(memDC, &descCard, descBrush);
+                        DeleteObject(descBrush);
+
+                        SelectObject(memDC, g_cardTitleFont);
+                        SetTextColor(memDC, RGB(230, 240, 255));
+                        TextOutW(memDC, 36, 455, L"Description & Target Location", 29);
+
+                        SelectObject(memDC, g_subFont);
+                        SetTextColor(memDC, RGB(200, 215, 235));
+                        std::wstring wDesc(pkg.description.begin(), pkg.description.end());
+                        RECT drText{ 36, 485, width - 36, 535 };
+                        DrawTextW(memDC, wDesc.c_str(), -1, &drText, DT_LEFT | DT_WORDBREAK);
+
+                        SetTextColor(memDC, RGB(130, 150, 185));
+                        std::string locLine = "Target / Uninstaller: " + (pkg.uninstallString.empty() ? (pkg.iconPath.empty() ? "Sovereign Root System Directory" : pkg.iconPath) : pkg.uninstallString);
+                        std::wstring wLoc(locLine.begin(), locLine.end());
+                        TextOutW(memDC, 36, 545, wLoc.c_str(), static_cast<int>(wLoc.size()));
+
+                        std::string urlLine = "Download / Manifest Endpoint: " + (pkg.downloadUrl.empty() ? (pkg.homepage.empty() ? "Local Manifest" : pkg.homepage) : pkg.downloadUrl);
+                        std::wstring wUrl(urlLine.begin(), urlLine.end());
+                        TextOutW(memDC, 36, 570, wUrl.c_str(), static_cast<int>(wUrl.size()));
                     }
-                    FillRect(memDC, &br, bBrush);
-                    DeleteObject(bBrush);
+                } else {
+                    int startY = 105;
+                    if (g_ui->activeTab() == ManagerTab::Library) {
+                        SetTextColor(memDC, RGB(220, 230, 245));
+                        std::string libHeader = "Installed Software & Pending Updates (" + std::to_string(g_ui->filteredPackages().size()) + " items)";
+                        std::wstring wLibHeader(libHeader.begin(), libHeader.end());
+                        TextOutW(memDC, 24, startY, wLibHeader.c_str(), static_cast<int>(wLibHeader.size()));
 
-                    SetTextColor(memDC, RGB(255, 255, 255));
-                    DrawTextW(memDC, btnText, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                        // Update All Button
+                        RECT ur{ g_ui->updateAllBtnBounds().x, g_ui->updateAllBtnBounds().y, g_ui->updateAllBtnBounds().x + g_ui->updateAllBtnBounds().width, g_ui->updateAllBtnBounds().y + g_ui->updateAllBtnBounds().height };
+                        HBRUSH uBrush = CreateSolidBrush(RGB(35, 120, 230));
+                        FillRect(memDC, &ur, uBrush);
+                        DeleteObject(uBrush);
+                        SetTextColor(memDC, RGB(255, 255, 255));
+                        DrawTextW(memDC, L"Update All", -1, &ur, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    } else {
+                        SetTextColor(memDC, RGB(220, 230, 245));
+                        std::string browseHeader = "Browse Catalog (" + std::to_string(g_ui->filteredPackages().size()) + " packages available)";
+                        std::wstring wBrowseHeader(browseHeader.begin(), browseHeader.end());
+                        TextOutW(memDC, 24, startY, wBrowseHeader.c_str(), static_cast<int>(wBrowseHeader.size()));
+                    }
+
+                    // Clip rendering to card viewport (between y=140 and y=height-32)
+                    HRGN clipRgn = CreateRectRgn(0, 140, width, height - 32);
+                    SelectClipRgn(memDC, clipRgn);
+
+                    int cardY = 145;
+                    int cardH = 75;
+                    const auto& pkgs = g_ui->filteredPackages();
+                    for (size_t i = 0; i < pkgs.size(); ++i) {
+                        const auto& pkg = pkgs[i];
+                        int cy = cardY + static_cast<int>(i) * (cardH + 10) - g_ui->scrollY();
+                        if (cy + cardH < 140 || cy > height - 32) continue;
+
+                        RECT cr{ 24, cy, width - 24, cy + cardH };
+                        HBRUSH cBrush = CreateSolidBrush(RGB(17, 24, 38));
+                        FillRect(memDC, &cr, cBrush);
+                        DeleteObject(cBrush);
+
+                        // Draw 40x40 Native App Icon or sovereign badge tile
+                        drawPackageIcon(memDC, pkg, 36, cy + 17, 40);
+
+                        // Package title (shifted to x = 88)
+                        SelectObject(memDC, g_cardTitleFont);
+                        SetTextColor(memDC, RGB(240, 245, 255));
+
+                        std::wstring wname(pkg.name.begin(), pkg.name.end());
+                        TextOutW(memDC, 88, cy + 14, wname.c_str(), static_cast<int>(wname.size()));
+
+                        SelectObject(memDC, g_subFont);
+                        SetTextColor(memDC, RGB(130, 150, 180));
+                        std::string desc = pkg.vendor + " | v" + (pkg.installedVersion.empty() ? pkg.version : pkg.installedVersion) + " | " + pkg.sourceToString() + " (" + pkg.architecture + ")";
+                        if (pkg.state == InstallState::UpdateAvailable) {
+                            desc += " -> New v" + pkg.version + " available";
+                        }
+                        std::wstring wdesc(desc.begin(), desc.end());
+                        TextOutW(memDC, 88, cy + 40, wdesc.c_str(), static_cast<int>(wdesc.size()));
+
+                        // Action button
+                        RECT br{ width - 150, cy + 20, width - 40, cy + 54 };
+                        bool isUp = (pkg.state == InstallState::UpdateAvailable);
+                        bool isInst = (pkg.state == InstallState::Installed);
+
+                        HBRUSH bBrush = nullptr;
+                        const wchar_t* btnText = L"Get";
+                        if (isUp) {
+                            bBrush = CreateSolidBrush(RGB(210, 140, 20)); // Orange
+                            btnText = L"Update";
+                        } else if (isInst) {
+                            if (g_ui->activeTab() == ManagerTab::Library) {
+                                bBrush = CreateSolidBrush(RGB(110, 40, 40)); // Reddish
+                                btnText = L"Uninstall";
+                            } else {
+                                bBrush = CreateSolidBrush(RGB(30, 75, 50)); // Green
+                                btnText = L"Installed";
+                            }
+                        } else {
+                            bBrush = CreateSolidBrush(RGB(25, 95, 180)); // Blue
+                            btnText = L"Get";
+                        }
+                        FillRect(memDC, &br, bBrush);
+                        DeleteObject(bBrush);
+
+                        SetTextColor(memDC, RGB(255, 255, 255));
+                        DrawTextW(memDC, btnText, -1, &br, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                    }
+
+                    SelectClipRgn(memDC, nullptr);
+                    DeleteObject(clipRgn);
                 }
-
-                SelectClipRgn(memDC, nullptr);
-                DeleteObject(clipRgn);
             } else if (g_ui->activeTab() == ManagerTab::Sideload) {
                 SetTextColor(memDC, RGB(230, 240, 255));
                 TextOutW(memDC, 24, 110, L"Sideload Inspector & Verification Sandbox", 42);
